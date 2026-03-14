@@ -5,6 +5,7 @@ import pino from 'pino';
 import sequelize from './config/db.js';
 import authRoutes from './routes/authRoutes.js';
 import roomRoutes from './routes/roomRoutes.js';
+import fileRoutes from './routes/fileRoutes.js';
 
 dotenv.config();
 const logger = pino({ transport: { target: 'pino-pretty' } });
@@ -17,6 +18,7 @@ app.use(express.json()); // Essential for parsing JSON bodies from requests
 // Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/rooms', roomRoutes);
+app.use('/api/files', fileRoutes);
 
 // Database Sync & Server Start
 const PORT = process.env.PORT || 5000;
