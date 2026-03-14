@@ -1,11 +1,10 @@
-import React, { useState, useEffect} from 'react';
+import React, { useState, useEffect } from 'react';
 import MainLayout from '../components/MainLayout';
 import Editor from '@monaco-editor/react';
-import { Play, Terminal, Code2, FileJson, Hash } from 'lucide-react';
+import { Play, Terminal, Code2, FileJson, Hash, Layout } from 'lucide-react';
 import { generateOutput } from '../utils/generateOutput';
 
 const EditorPage = () => {
-    // State for each "file"
     const [files, setFiles] = useState({
         html: '<h1>Hello World</h1>',
         css: 'h1 { color: #007acc; text-align: center; font-family: sans-serif; }',
@@ -15,22 +14,24 @@ const EditorPage = () => {
     const [activeTab, setActiveTab] = useState('html');
     const [srcDoc, setSrcDoc] = useState('');
     const [logs, setLogs] = useState([]);
+    const [showPreview, setShowPreview] = useState(true);
+    const [executionKey, setExecutionKey] = useState(0);
 
     useEffect(() => {
-    const handleMessage = (event) => {
-      if (event.data.type === 'CONSOLE_LOG') {
-        // args comes as an array, we join them for display
-        setLogs(prev => [...prev, event.data.payload.join(' ')]);
-      }
-    };
-
-    window.addEventListener('message', handleMessage);
-    return () => window.removeEventListener('message', handleMessage);
-  }, []);
+        const handleMessage = (event) => {
+            if (event.data.type === 'CONSOLE_LOG') {
+                setLogs(prev => [...prev, event.data.payload.join(' ')]);
+            }
+        };
+        window.addEventListener('message', handleMessage);
+        return () => window.removeEventListener('message', handleMessage);
+    }, []);
 
     const runCode = () => {
-        setLogs([]); // Clear console on run
+        setLogs([]);
         setSrcDoc(generateOutput(files.html, files.css, files.js));
+        setShowPreview(true);
+        setExecutionKey(prev => prev + 1); // Increment key to force-mount a new iframe
     };
 
     const handleEditorChange = (value) => {
@@ -39,16 +40,22 @@ const EditorPage = () => {
 
     return (
         <MainLayout>
-            <div className="flex h-full w-full bg-editor overflow-hidden">
+            <div className="flex h-full w-full bg-editor overflow-hidden relative">
+
                 {/* Left: Editor Panel */}
-                <div className="w-1/2 border-r border-white/10 flex flex-col">
+                <div
+                    className={`flex flex-col border-r border-white/10 transition-all duration-300 ease-in-out ${showPreview ? 'w-1/2' : 'w-full'
+                        }`}
+                >
                     {/* Tab Bar */}
-                    <div className="flex bg-sidebar border-b border-white/10">
+                    <div className="flex bg-sidebar border-b border-white/10 items-center">
                         {['html', 'css', 'js'].map((tab) => (
                             <button
                                 key={tab}
                                 onClick={() => setActiveTab(tab)}
-                                className={`px-4 py-2 text-xs flex items-center gap-2 border-r border-white/5 transition-all ${activeTab === tab ? 'bg-editor text-white border-t-2 border-t-accent' : 'text-gray-500 hover:bg-editor/50'
+                                className={`px-4 py-2 text-xs flex items-center gap-2 border-r border-white/5 transition-all ${activeTab === tab
+                                    ? 'bg-editor text-white border-t-2 border-t-accent'
+                                    : 'text-gray-500 hover:bg-editor/50'
                                     }`}
                             >
                                 {tab === 'html' && <Code2 size={14} className="text-orange-500" />}
@@ -57,57 +64,79 @@ const EditorPage = () => {
                                 {tab.toUpperCase()}
                             </button>
                         ))}
+
                         <div className="flex-grow"></div>
-                        <button
-                            className="m-1 px-3 py-1 text-xs bg-green-600 hover:bg-green-700 rounded text-white flex items-center gap-2 transition-colors"
-                            onClick={runCode}
-                        >
-                            <Play size={14} fill="currentColor" /> RUN
-                        </button>
+
+                        {/* Toolbar */}
+                        <div className="flex items-center gap-2 px-2">
+                            <button
+                                onClick={() => setShowPreview(!showPreview)}
+                                className={`p-1.5 rounded hover:bg-white/10 transition-colors ${!showPreview ? 'text-accent bg-accent/10' : 'text-gray-400'}`}
+                                title={showPreview ? "Hide Preview" : "Show Preview"}
+                            >
+                                <Layout size={16} />
+                            </button>
+
+                            <button
+                                className="my-1 px-3 py-1 text-xs bg-green-600 hover:bg-green-700 rounded text-white flex items-center gap-2 transition-colors font-bold"
+                                onClick={runCode}
+                            >
+                                <Play size={14} fill="currentColor" /> RUN
+                            </button>
+                        </div>
                     </div>
 
-                    <Editor
-                        height="100%"
-                        theme="vs-dark"
-                        language={activeTab === 'js' ? 'javascript' : activeTab}
-                        value={files[activeTab]}
-                        onChange={handleEditorChange}
-                        options={{
-                            fontSize: 14,
-                            minimap: { enabled: false },
-                            wordWrap: "on",
-                            scrollBeyondLastLine: false,
-                        }}
-                    />
+                    <div className="flex-grow">
+                        <Editor
+                            height="100%"
+                            theme="vs-dark"
+                            language={activeTab === 'js' ? 'javascript' : activeTab}
+                            value={files[activeTab]}
+                            onChange={handleEditorChange}
+                            options={{
+                                fontSize: 14,
+                                minimap: { enabled: false },
+                                wordWrap: "on",
+                                automaticLayout: true,
+                            }}
+                        />
+                    </div>
                 </div>
 
                 {/* Right: Preview & Console */}
-                <div className="w-1/2 flex flex-col">
-                    <div className="flex-grow bg-white">
-                        <iframe
-                            srcDoc={srcDoc}
-                            title="output"
-                            sandbox="allow-scripts"
-                            className="w-full h-full border-none"
-                        />
-                    </div>
+                {showPreview && (
+                    <div className="w-1/2 flex flex-col animate-in slide-in-from-right duration-300">
+                        <div className="flex-grow bg-white relative">
+                            <iframe
+                                key={executionKey}
+                                srcDoc={srcDoc}
+                                title="output"
+                                sandbox="allow-scripts"
+                                className="w-full h-full border-none"
+                            />
+                        </div>
 
-                    {/* Console Section */}
-                    <div className="h-40 bg-sidebar border-t border-white/10 flex flex-col">
-                        <div className="px-3 py-1 bg-activity text-[10px] uppercase tracking-widest text-gray-400 flex items-center gap-2">
-                            <Terminal size={12} /> Live Console
-                        </div>
-                        <div className="flex-grow p-2 font-mono text-xs overflow-y-auto bg-black/20">
-                            {logs.length === 0 && <span className="text-gray-600">No output yet. Press Run...</span>}
-                            {logs.map((log, i) => (
-                                <div key={i} className="text-green-400 py-0.5 border-b border-white/5">
-                                    <span className="text-gray-500 mr-2">[{new Date().toLocaleTimeString()}]</span>
-                                    {log}
+                        <div className="h-40 bg-sidebar border-t border-white/10 flex flex-col">
+                            <div className="px-3 py-1 bg-activity text-[10px] uppercase tracking-widest text-gray-400 flex items-center justify-between">
+                                <div className="flex items-center gap-2">
+                                    <Terminal size={12} /> Live Console
                                 </div>
-                            ))}
+                                <button onClick={() => setLogs([])} className="hover:text-white transition-colors">Clear</button>
+                            </div>
+                            <div className="flex-grow p-2 font-mono text-xs overflow-y-auto bg-black/20">
+                                {logs.length === 0 && <span className="text-gray-600 italic">No output yet. Press Run...</span>}
+                                {logs.map((log, i) => (
+                                    <div key={i} className="text-green-400 py-0.5 border-b border-white/5 last:border-none">
+                                        <span className="text-gray-500 mr-2 text-[10px]">
+                                            [{new Date().toLocaleTimeString([], { hour12: false })}]
+                                        </span>
+                                        {log}
+                                    </div>
+                                ))}
+                            </div>
                         </div>
                     </div>
-                </div>
+                )}
             </div>
         </MainLayout>
     );
