@@ -7,5 +7,6 @@ const router = express.Router();
 // Apply 'protect' middleware so only logged-in users can manage files
 router.post('/', protect, (req, res) => FileController.create(req, res));
 router.get('/room/:roomId', protect, (req, res) => FileController.getFiles(req, res));
+router.delete('/:id', protect, (req, res) => FileController.delete(req, res));
 
 export default router;

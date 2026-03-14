@@ -19,13 +19,19 @@ class FileService {
     // This will be called by our WebSocket sync later
     const file = await FileRepository.findById(fileId);
     if (!file) throw new Error('File not found');
-    
+
     file.content = content;
     return await file.save();
   }
 
   async getRoomFiles(roomId) {
     return await FileRepository.getFilesByRoom(roomId);
+  }
+  
+  async removeFile(fileId) {
+    const deleted = await FileRepository.deleteFile(fileId);
+    if (!deleted) throw new Error('File not found or already deleted');
+    return { message: 'File deleted successfully' };
   }
 }
 

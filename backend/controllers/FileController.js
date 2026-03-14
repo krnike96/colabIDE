@@ -19,6 +19,15 @@ class FileController {
       res.status(400).json({ error: error.message });
     }
   }
+
+  async delete(req, res) {
+    try {
+      const result = await FileService.removeFile(req.params.id);
+      res.status(200).json(result);
+    } catch (error) {
+      res.status(404).json({ error: error.message });
+    }
+  }
 }
 
 export default new FileController();

@@ -12,6 +12,14 @@ class FileRepository {
   async deleteFile(fileId) {
     return await File.destroy({ where: { id: fileId } });
   }
+
+  async findById(id) {
+    return await File.findByPk(id);
+  }
+
+  async deleteFile(id) {
+    return await File.destroy({ where: { id } });
+  }
 }
 
 export default new FileRepository();
