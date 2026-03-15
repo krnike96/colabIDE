@@ -1,0 +1,724 @@
+=== Directory Structure ===
+└── frontend
+    ├── README.md
+    ├── eslint.config.js
+    ├── index.html
+    ├── package.json
+    ├── postcss.config.js
+    ├── public
+    ├── src
+    │   ├── App.css
+    │   ├── App.jsx
+    │   ├── assets
+    │   ├── components
+    │   │   └── MainLayout.jsx
+    │   ├── index.css
+    │   ├── main.jsx
+    │   ├── pages
+    │   │   ├── EditorPage.jsx
+    │   │   ├── Login.jsx
+    │   │   └── Signup.jsx
+    │   └── utils
+    │       └── generateOutput.js
+    ├── tailwind.config.js
+    └── vite.config.js
+
+=== File Contents ===
+
+--- File: eslint.config.js ---
+
+import js from '@eslint/js'
+import globals from 'globals'
+import reactHooks from 'eslint-plugin-react-hooks'
+import reactRefresh from 'eslint-plugin-react-refresh'
+import { defineConfig, globalIgnores } from 'eslint/config'
+
+export default defineConfig([
+  globalIgnores(['dist']),
+  {
+    files: ['**/*.{js,jsx}'],
+    extends: [
+      js.configs.recommended,
+      reactHooks.configs.flat.recommended,
+      reactRefresh.configs.vite,
+    ],
+    languageOptions: {
+      ecmaVersion: 2020,
+      globals: globals.browser,
+      parserOptions: {
+        ecmaVersion: 'latest',
+        ecmaFeatures: { jsx: true },
+        sourceType: 'module',
+      },
+    },
+    rules: {
+      'no-unused-vars': ['error', { varsIgnorePattern: '^[A-Z_]' }],
+    },
+  },
+])
+
+
+--- File: index.html ---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>frontend</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>
+
+
+--- File: package.json ---
+
+{
+  "name": "frontend",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "lint": "eslint .",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@monaco-editor/react": "^4.7.0",
+    "axios": "^1.13.6",
+    "lucide-react": "^0.577.0",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "react-router-dom": "^7.13.1",
+    "socket.io-client": "^4.8.3",
+    "y-protocols": "^1.0.7",
+    "y-socket.io": "^1.1.3",
+    "y-webrtc": "^10.3.0",
+    "yjs": "^13.6.30"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.4",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.0",
+    "autoprefixer": "^10.4.27",
+    "eslint": "^9.39.4",
+    "eslint-plugin-react-hooks": "^7.0.1",
+    "eslint-plugin-react-refresh": "^0.5.2",
+    "globals": "^17.4.0",
+    "postcss": "^8.5.8",
+    "tailwindcss": "3.4",
+    "vite": "^8.0.0"
+  }
+}
+
+
+--- File: postcss.config.js ---
+
+export default {
+  plugins: {
+    tailwindcss: {},
+    autoprefixer: {},
+  },
+}
+
+
+--- File: README.md ---
+
+# React + Vite
+
+This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+
+Currently, two official plugins are available:
+
+- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
+- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+
+## React Compiler
+
+The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+
+## Expanding the ESLint configuration
+
+If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+
+
+--- File: tailwind.config.js ---
+
+/** @type {import('tailwindcss').Config} */
+export default {
+  content: [
+    "./index.html",
+    "./src/**/*.{js,ts,jsx,tsx}",
+  ],
+  theme: {
+    extend: {
+      colors: {
+        // "IDE Dark" theme colors
+        editor: '#1e1e1e',
+        sidebar: '#252526',
+        activity: '#333333',
+        accent: '#007acc'
+      }
+    },
+  },
+  plugins: [],
+}
+
+--- File: vite.config.js ---
+
+import { defineConfig } from 'vite'
+import react from '@vitejs/plugin-react'
+
+// https://vite.dev/config/
+export default defineConfig({
+  plugins: [react()],
+})
+
+
+--- File: src\App.css ---
+
+.counter {
+  font-size: 16px;
+  padding: 5px 10px;
+  border-radius: 5px;
+  color: var(--accent);
+  background: var(--accent-bg);
+  border: 2px solid transparent;
+  transition: border-color 0.3s;
+  margin-bottom: 24px;
+
+  &:hover {
+    border-color: var(--accent-border);
+  }
+  &:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+}
+
+.hero {
+  position: relative;
+
+  .base,
+  .framework,
+  .vite {
+    inset-inline: 0;
+    margin: 0 auto;
+  }
+
+  .base {
+    width: 170px;
+    position: relative;
+    z-index: 0;
+  }
+
+  .framework,
+  .vite {
+    position: absolute;
+  }
+
+  .framework {
+    z-index: 1;
+    top: 34px;
+    height: 28px;
+    transform: perspective(2000px) rotateZ(300deg) rotateX(44deg) rotateY(39deg)
+      scale(1.4);
+  }
+
+  .vite {
+    z-index: 0;
+    top: 107px;
+    height: 26px;
+    width: auto;
+    transform: perspective(2000px) rotateZ(300deg) rotateX(40deg) rotateY(39deg)
+      scale(0.8);
+  }
+}
+
+#center {
+  display: flex;
+  flex-direction: column;
+  gap: 25px;
+  place-content: center;
+  place-items: center;
+  flex-grow: 1;
+
+  @media (max-width: 1024px) {
+    padding: 32px 20px 24px;
+    gap: 18px;
+  }
+}
+
+#next-steps {
+  display: flex;
+  border-top: 1px solid var(--border);
+  text-align: left;
+
+  & > div {
+    flex: 1 1 0;
+    padding: 32px;
+    @media (max-width: 1024px) {
+      padding: 24px 20px;
+    }
+  }
+
+  .icon {
+    margin-bottom: 16px;
+    width: 22px;
+    height: 22px;
+  }
+
+  @media (max-width: 1024px) {
+    flex-direction: column;
+    text-align: center;
+  }
+}
+
+#docs {
+  border-right: 1px solid var(--border);
+
+  @media (max-width: 1024px) {
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+  }
+}
+
+#next-steps ul {
+  list-style: none;
+  padding: 0;
+  display: flex;
+  gap: 8px;
+  margin: 32px 0 0;
+
+  .logo {
+    height: 18px;
+  }
+
+  a {
+    color: var(--text-h);
+    font-size: 16px;
+    border-radius: 6px;
+    background: var(--social-bg);
+    display: flex;
+    padding: 6px 12px;
+    align-items: center;
+    gap: 8px;
+    text-decoration: none;
+    transition: box-shadow 0.3s;
+
+    &:hover {
+      box-shadow: var(--shadow);
+    }
+    .button-icon {
+      height: 18px;
+      width: 18px;
+    }
+  }
+
+  @media (max-width: 1024px) {
+    margin-top: 20px;
+    flex-wrap: wrap;
+    justify-content: center;
+
+    li {
+      flex: 1 1 calc(50% - 8px);
+    }
+
+    a {
+      width: 100%;
+      justify-content: center;
+      box-sizing: border-box;
+    }
+  }
+}
+
+#spacer {
+  height: 88px;
+  border-top: 1px solid var(--border);
+  @media (max-width: 1024px) {
+    height: 48px;
+  }
+}
+
+.ticks {
+  position: relative;
+  width: 100%;
+
+  &::before,
+  &::after {
+    content: '';
+    position: absolute;
+    top: -4.5px;
+    border: 5px solid transparent;
+  }
+
+  &::before {
+    left: 0;
+    border-left-color: var(--border);
+  }
+  &::after {
+    right: 0;
+    border-right-color: var(--border);
+  }
+}
+
+
+--- File: src\App.jsx ---
+
+import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
+import Login from './pages/Login';
+import Signup from './pages/Signup';
+import EditorPage from './pages/EditorPage';
+
+function App() {
+  return (
+    <Router>
+      <Routes>
+        <Route path="/login" element={<Login />} />
+        <Route path="/signup" element={<Signup />} />
+        {/* We will protect this route later */}
+        <Route path="/editor/:roomId" element={<EditorPage />} />
+        <Route path="/" element={<Navigate to="/login" />} />
+      </Routes>
+    </Router>
+  );
+}
+
+export default App;
+
+--- File: src\index.css ---
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  /* Prevents double scrollbars in IDE */
+  background-color: #1e1e1e;
+  color: white;
+}
+
+--- File: src\main.jsx ---
+
+import { StrictMode } from 'react'
+import { createRoot } from 'react-dom/client'
+import './index.css'
+import App from './App.jsx'
+
+createRoot(document.getElementById('root')).render(
+  <StrictMode>
+    <App />
+  </StrictMode>,
+)
+
+
+--- File: src\components\MainLayout.jsx ---
+
+import React, { useState } from 'react';
+import { Files, MessageSquare, Users, Settings, Play } from 'lucide-react';
+
+const MainLayout = ({ children }) => {
+    const [activeTab, setActiveTab] = useState('files');
+
+    return (
+        <div className="flex h-screen w-screen bg-editor text-gray-300 font-sans">
+            {/* 1. Activity Bar (Slim Left) */}
+            <div className="w-12 bg-activity flex flex-col items-center py-4 space-y-6 border-r border-white/10">
+                <Files className={`cursor-pointer ${activeTab === 'files' ? 'text-white' : 'text-gray-500'}`} onClick={() => setActiveTab('files')} />
+                <MessageSquare className={`cursor-pointer ${activeTab === 'chat' ? 'text-white' : 'text-gray-500'}`} onClick={() => setActiveTab('chat')} />
+                <Users className="text-gray-500 cursor-pointer" />
+                <div className="flex-grow"></div>
+                <Settings className="text-gray-500 cursor-pointer mb-2" />
+            </div>
+
+            {/* 2. Side Pane (Dynamic Content) */}
+            <div className="w-64 bg-sidebar border-r border-white/10 flex flex-col">
+                <div className="p-3 uppercase text-xs font-bold tracking-widest text-gray-500">
+                    {activeTab}
+                </div>
+                <div className="flex-grow p-2">
+                    {/* File Explorer or Chat will go here */}
+                    <p className="text-sm text-gray-400">Explorer Content...</p>
+                </div>
+            </div>
+
+            {/* 3. Main Editor Area */}
+            <div className="flex-grow flex flex-col">
+                {/* Tab Headers */}
+                <div className="h-10 bg-sidebar flex items-center border-b border-white/10">
+                    <div className="px-4 h-full flex items-center bg-editor border-r border-white/10 text-sm border-t-2 border-t-accent">
+                        index.js
+                    </div>
+                    <div className="px-4 h-full flex items-center text-sm border-r border-white/10 opacity-50">
+                        styles.css
+                    </div>
+                </div>
+
+                {/* Editor Content */}
+                <div className="flex-grow relative">
+                    {children}
+                </div>
+            </div>
+        </div>
+    );
+};
+
+export default MainLayout;
+
+--- File: src\pages\EditorPage.jsx ---
+
+import React, { useState, useEffect } from 'react';
+import MainLayout from '../components/MainLayout';
+import Editor from '@monaco-editor/react';
+import { Play, Terminal, Code2, FileJson, Hash, Layout } from 'lucide-react';
+import { generateOutput } from '../utils/generateOutput';
+
+const EditorPage = () => {
+    const [files, setFiles] = useState({
+        html: '<h1>Hello World</h1>',
+        css: 'h1 { color: #007acc; text-align: center; font-family: sans-serif; }',
+        js: 'console.log("Console is working!");'
+    });
+
+    const [activeTab, setActiveTab] = useState('html');
+    const [srcDoc, setSrcDoc] = useState('');
+    const [logs, setLogs] = useState([]);
+    const [showPreview, setShowPreview] = useState(true);
+    const [executionKey, setExecutionKey] = useState(0);
+
+    useEffect(() => {
+        const handleMessage = (event) => {
+            if (event.data.type === 'CONSOLE_LOG') {
+                setLogs(prev => [...prev, event.data.payload.join(' ')]);
+            }
+        };
+        window.addEventListener('message', handleMessage);
+        return () => window.removeEventListener('message', handleMessage);
+    }, []);
+
+    const runCode = () => {
+        setLogs([]);
+        setSrcDoc(generateOutput(files.html, files.css, files.js));
+        setShowPreview(true);
+        setExecutionKey(prev => prev + 1); // Increment key to force-mount a new iframe
+    };
+
+    const handleEditorChange = (value) => {
+        setFiles(prev => ({ ...prev, [activeTab]: value }));
+    };
+
+    return (
+        <MainLayout>
+            <div className="flex h-full w-full bg-editor overflow-hidden relative">
+
+                {/* Left: Editor Panel */}
+                <div
+                    className={`flex flex-col border-r border-white/10 transition-all duration-300 ease-in-out ${showPreview ? 'w-1/2' : 'w-full'
+                        }`}
+                >
+                    {/* Tab Bar */}
+                    <div className="flex bg-sidebar border-b border-white/10 items-center">
+                        {['html', 'css', 'js'].map((tab) => (
+                            <button
+                                key={tab}
+                                onClick={() => setActiveTab(tab)}
+                                className={`px-4 py-2 text-xs flex items-center gap-2 border-r border-white/5 transition-all ${activeTab === tab
+                                    ? 'bg-editor text-white border-t-2 border-t-accent'
+                                    : 'text-gray-500 hover:bg-editor/50'
+                                    }`}
+                            >
+                                {tab === 'html' && <Code2 size={14} className="text-orange-500" />}
+                                {tab === 'css' && <Hash size={14} className="text-blue-400" />}
+                                {tab === 'js' && <FileJson size={14} className="text-yellow-400" />}
+                                {tab.toUpperCase()}
+                            </button>
+                        ))}
+
+                        <div className="flex-grow"></div>
+
+                        {/* Toolbar */}
+                        <div className="flex items-center gap-2 px-2">
+                            <button
+                                onClick={() => setShowPreview(!showPreview)}
+                                className={`p-1.5 rounded hover:bg-white/10 transition-colors ${!showPreview ? 'text-accent bg-accent/10' : 'text-gray-400'}`}
+                                title={showPreview ? "Hide Preview" : "Show Preview"}
+                            >
+                                <Layout size={16} />
+                            </button>
+
+                            <button
+                                className="my-1 px-3 py-1 text-xs bg-green-600 hover:bg-green-700 rounded text-white flex items-center gap-2 transition-colors font-bold"
+                                onClick={runCode}
+                            >
+                                <Play size={14} fill="currentColor" /> RUN
+                            </button>
+                        </div>
+                    </div>
+
+                    <div className="flex-grow">
+                        <Editor
+                            height="100%"
+                            theme="vs-dark"
+                            language={activeTab === 'js' ? 'javascript' : activeTab}
+                            value={files[activeTab]}
+                            onChange={handleEditorChange}
+                            options={{
+                                fontSize: 14,
+                                minimap: { enabled: false },
+                                wordWrap: "on",
+                                automaticLayout: true,
+                            }}
+                        />
+                    </div>
+                </div>
+
+                {/* Right: Preview & Console */}
+                {showPreview && (
+                    <div className="w-1/2 flex flex-col animate-in slide-in-from-right duration-300">
+                        <div className="flex-grow bg-white relative">
+                            <iframe
+                                key={executionKey}
+                                srcDoc={srcDoc}
+                                title="output"
+                                sandbox="allow-scripts"
+                                className="w-full h-full border-none"
+                            />
+                        </div>
+
+                        <div className="h-40 bg-sidebar border-t border-white/10 flex flex-col">
+                            <div className="px-3 py-1 bg-activity text-[10px] uppercase tracking-widest text-gray-400 flex items-center justify-between">
+                                <div className="flex items-center gap-2">
+                                    <Terminal size={12} /> Live Console
+                                </div>
+                                <button onClick={() => setLogs([])} className="hover:text-white transition-colors">Clear</button>
+                            </div>
+                            <div className="flex-grow p-2 font-mono text-xs overflow-y-auto bg-black/20">
+                                {logs.length === 0 && <span className="text-gray-600 italic">No output yet. Press Run...</span>}
+                                {logs.map((log, i) => (
+                                    <div key={i} className="text-green-400 py-0.5 border-b border-white/5 last:border-none">
+                                        <span className="text-gray-500 mr-2 text-[10px]">
+                                            [{new Date().toLocaleTimeString([], { hour12: false })}]
+                                        </span>
+                                        {log}
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    </div>
+                )}
+            </div>
+        </MainLayout>
+    );
+};
+
+export default EditorPage;
+
+--- File: src\pages\Login.jsx ---
+
+import React from 'react';
+import { Link } from 'react-router-dom';
+
+const Login = () => {
+    return (
+        <div className="h-screen flex items-center justify-center bg-editor text-white">
+            <div className="bg-sidebar p-8 rounded-lg border border-white/10 w-96">
+                <h2 className="text-2xl font-bold mb-6 text-center">Welcome Back</h2>
+                <div className="space-y-4">
+                    <input type="email" placeholder="Email" className="w-full p-2 bg-editor border border-white/10 rounded" />
+                    <input type="password" placeholder="Password" className="w-full p-2 bg-editor border border-white/10 rounded" />
+                    <button className="w-full py-2 bg-accent rounded font-bold hover:bg-blue-600">Login</button>
+                </div>
+                <p className="mt-4 text-sm text-gray-400 text-center">
+                    Don't have an account? <Link to="/signup" className="text-accent">Sign up</Link>
+                </p>
+            </div>
+        </div>
+    );
+};
+
+export default Login;
+
+--- File: src\pages\Signup.jsx ---
+
+import React from 'react';
+import { Link } from 'react-router-dom';
+
+const Signup = () => {
+    return (
+        <div className="h-screen flex items-center justify-center bg-editor text-white">
+            <div className="bg-sidebar p-8 rounded-lg border border-white/10 w-96">
+                <h2 className="text-2xl font-bold mb-6 text-center">Create Account</h2>
+                <div className="space-y-4">
+                    <input
+                        type="text"
+                        placeholder="Username"
+                        className="w-full p-2 bg-editor border border-white/10 rounded focus:border-accent outline-none"
+                    />
+                    <input
+                        type="email"
+                        placeholder="Email Address"
+                        className="w-full p-2 bg-editor border border-white/10 rounded focus:border-accent outline-none"
+                    />
+                    <input
+                        type="password"
+                        placeholder="Password"
+                        className="w-full p-2 bg-editor border border-white/10 rounded focus:border-accent outline-none"
+                    />
+                    <button className="w-full py-2 bg-accent rounded font-bold hover:bg-blue-600 transition-colors">
+                        Sign Up
+                    </button>
+                </div>
+                <p className="mt-4 text-sm text-gray-400 text-center">
+                    Already have an account? <Link to="/login" className="text-accent hover:underline">Login</Link>
+                </p>
+            </div>
+        </div>
+    );
+};
+
+export default Signup;
+
+--- File: src\utils\generateOutput.js ---
+
+export const generateOutput = (html, css, js) => {
+    // We add a hidden timestamp comment so the string is always unique
+    const nonce = ``;
+
+    return `
+    <html>
+      <head>
+        ${nonce}
+        <style>${css}</style>
+      </head>
+      <body>
+        ${html}
+        <script>
+          const originalLog = console.log;
+          console.log = (...args) => {
+            window.parent.postMessage({ type: 'CONSOLE_LOG', payload: args }, '*');
+            originalLog(...args);
+          };
+          
+          try {
+            ${js}
+          } catch (err) {
+            console.log("Error: " + err.message);
+          }
+        </script>
+      </body>
+    </html>
+  `;
+};
+

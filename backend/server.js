@@ -1,6 +1,7 @@
 import express from 'express';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
+import { setupSockets } from './sockets/socketHandlers.js';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import pino from 'pino';
@@ -9,7 +10,7 @@ import authRoutes from './routes/authRoutes.js';
 import roomRoutes from './routes/roomRoutes.js';
 import fileRoutes from './routes/fileRoutes.js';
 import exportRoutes from './routes/exportRoutes.js';
-import { setupSockets } from './sockets/socketHandlers.js';
+import projectRoutes from './routes/projectRoutes.js';
 
 dotenv.config();
 const logger = pino({ transport: { target: 'pino-pretty' } });
@@ -32,6 +33,7 @@ app.use('/api/auth', authRoutes);
 app.use('/api/rooms', roomRoutes);
 app.use('/api/files', fileRoutes);
 app.use('/api/export', exportRoutes);
+app.use('/api/projects', projectRoutes);
 
 // Socket Init
 setupSockets(io);

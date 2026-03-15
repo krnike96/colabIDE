@@ -1,8 +1,10 @@
 import React, { useState, useEffect } from 'react';
+import { useParams } from 'react-router-dom';
 import MainLayout from '../components/MainLayout';
 import Editor from '@monaco-editor/react';
-import { Play, Terminal, Code2, FileJson, Hash, Layout } from 'lucide-react';
+import { Save, Play, Terminal, Code2, FileJson, Hash, Layout } from 'lucide-react';
 import { generateOutput } from '../utils/generateOutput';
+import api from '../api';
 
 const EditorPage = () => {
     const [files, setFiles] = useState({
@@ -16,7 +18,9 @@ const EditorPage = () => {
     const [logs, setLogs] = useState([]);
     const [showPreview, setShowPreview] = useState(true);
     const [executionKey, setExecutionKey] = useState(0);
+    const { roomId } = useParams();
 
+    // Catch console logs from the iframe
     useEffect(() => {
         const handleMessage = (event) => {
             if (event.data.type === 'CONSOLE_LOG') {
@@ -26,6 +30,40 @@ const EditorPage = () => {
         window.addEventListener('message', handleMessage);
         return () => window.removeEventListener('message', handleMessage);
     }, []);
+
+    // 1. Fetch project data from DB on component mount
+    useEffect(() => {
+        const fetchProject = async () => {
+            try {
+                const { data } = await api.get(`/projects/${roomId}`);
+                if (data) {
+                    setFiles({
+                        html: data.html || '<h1>Hello World</h1>',
+                        css: data.css || '',
+                        js: data.js || ''
+                    });
+                }
+            } catch (err) {
+                console.error("New room or failed to load:", err);
+            }
+        };
+        fetchProject();
+    }, [roomId]);
+
+    // 2. Manual Save function to persist current state to DB
+    const saveProject = async () => {
+        try {
+            await api.put(`/projects/${roomId}`, {
+                html: files.html,
+                css: files.css,
+                js: files.js
+            });
+            alert("Project saved successfully!");
+        } catch (err) {
+            console.error(err);
+            alert(err.response?.data?.error || "Failed to save project");
+        }
+    };
 
     const runCode = () => {
         setLogs([]);
@@ -69,6 +107,12 @@ const EditorPage = () => {
 
                         {/* Toolbar */}
                         <div className="flex items-center gap-2 px-2">
+                            <button
+                                onClick={saveProject}
+                                className="px-3 py-1 text-xs bg-accent hover:bg-blue-600 rounded text-white flex items-center gap-2 transition-colors font-bold"
+                            >
+                                <Save size={14} /> SAVE
+                            </button>
                             <button
                                 onClick={() => setShowPreview(!showPreview)}
                                 className={`p-1.5 rounded hover:bg-white/10 transition-colors ${!showPreview ? 'text-accent bg-accent/10' : 'text-gray-400'}`}

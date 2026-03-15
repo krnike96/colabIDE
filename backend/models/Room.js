@@ -5,15 +5,23 @@ const Room = sequelize.define('Room', {
   id: {
     type: DataTypes.UUID,
     defaultValue: DataTypes.UUIDV4,
-    primaryKey: true
+    primaryKey: true,
   },
   name: {
     type: DataTypes.STRING,
-    allowNull: false
+    allowNull: false,
   },
-  isLocked: {
-    type: DataTypes.BOOLEAN,
-    defaultValue: false // Used when Admin triggers "End Session"
+  htmlContent: {
+    type: DataTypes.TEXT,
+    defaultValue: '<h1>Hello World</h1>'
+  },
+  cssContent: {
+    type: DataTypes.TEXT,
+    defaultValue: ''
+  },
+  jsContent: {
+    type: DataTypes.TEXT,
+    defaultValue: ''
   }
 });
 
