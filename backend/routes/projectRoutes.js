@@ -4,16 +4,7 @@ import { protect } from '../middleware/authMiddleware.js';
 
 const router = express.Router();
 
-/**
- * GET: Load project content (HTML, CSS, JS)
- * URL: /api/projects/:id
- */
-router.get('/:id', protect, (req, res) => ProjectController.getProject(req, res));
-
-/**
- * PUT: Save project content to the database
- * URL: /api/projects/:id
- */
-router.put('/:id', protect, (req, res) => ProjectController.updateProject(req, res));
-
+router.get('/room/:id', protect, (req, res) => ProjectController.getProjectFiles(req, res));
+router.put('/file/:fileId', protect, (req, res) => ProjectController.saveFileContent(req, res));
+router.patch('/file/:fileId/rename', protect, (req, res) => ProjectController.renameFile(req, res));
 export default router;

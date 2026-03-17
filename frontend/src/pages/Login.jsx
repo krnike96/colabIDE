@@ -17,8 +17,8 @@ const Login = () => {
             localStorage.setItem('token', data.token);
             localStorage.setItem('user', JSON.stringify(data.user));
 
-            // Redirect to a default project/room
-            navigate('/editor/default-room');
+            // Redirect to the lobby instead of a hardcoded room
+            navigate('/lobby');
         } catch (error) {
             alert(error.response?.data?.error || "Login failed. Please check your credentials.");
         }
