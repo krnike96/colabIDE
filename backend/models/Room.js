@@ -11,17 +11,9 @@ const Room = sequelize.define('Room', {
     type: DataTypes.STRING,
     allowNull: false,
   },
-  htmlContent: {
-    type: DataTypes.TEXT,
-    defaultValue: '<h1>Hello World</h1>'
-  },
-  cssContent: {
-    type: DataTypes.TEXT,
-    defaultValue: ''
-  },
-  jsContent: {
-    type: DataTypes.TEXT,
-    defaultValue: ''
+  adminId: {
+    type: DataTypes.UUID,
+    allowNull: false,
   }
 });
 

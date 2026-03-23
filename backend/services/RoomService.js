@@ -2,14 +2,20 @@ import RoomRepository from '../repositories/RoomRepository.js';
 import { Participant } from '../models/index.js';
 
 class RoomService {
-  async createRoom(name, adminUserId) {
-    // 1. Create the Room
-    const room = await RoomRepository.create({ name });
+  async createRoom(name, adminId) {
+    if (!name) throw new Error('Room name is required');
+    if (!adminId) throw new Error('Admin ID is required');
 
-    // 2. Assign the creator as the ADMIN (Single Responsibility)
+    // 1. Create the room with the adminId
+    const room = await RoomRepository.create({
+      name,
+      adminId // This fixes the NotNull violation
+    });
+
+    // 2. Automatically add the creator as an 'ADMIN' participant
     await Participant.create({
-      UserId: adminUserId,
       RoomId: room.id,
+      UserId: adminId,
       role: 'ADMIN'
     });
 

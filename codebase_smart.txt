@@ -1,0 +1,1979 @@
+=== Directory Structure ===
+└── COLAB_IDE
+    ├── backend
+    │   ├── .env
+    │   ├── config
+    │   │   └── db.js
+    │   ├── controllers
+    │   │   ├── AuthController.js
+    │   │   ├── ExportController.js
+    │   │   ├── FileController.js
+    │   │   ├── ProjectController.js
+    │   │   └── RoomController.js
+    │   ├── middleware
+    │   │   └── authMiddleware.js
+    │   ├── models
+    │   │   ├── File.js
+    │   │   ├── Participant.js
+    │   │   ├── Room.js
+    │   │   ├── User.js
+    │   │   └── index.js
+    │   ├── package.json
+    │   ├── repositories
+    │   │   ├── FileRepository.js
+    │   │   ├── RoomRepository.js
+    │   │   └── UserRepository.js
+    │   ├── routes
+    │   │   ├── authRoutes.js
+    │   │   ├── exportRoutes.js
+    │   │   ├── fileRoutes.js
+    │   │   ├── projectRoutes.js
+    │   │   └── roomRoutes.js
+    │   ├── server.js
+    │   ├── services
+    │   │   ├── AuthService.js
+    │   │   ├── ExportService.js
+    │   │   ├── FileService.js
+    │   │   └── RoomService.js
+    │   ├── sockets
+    │   │   └── socketHandlers.js
+    │   ├── test-client.js
+    │   ├── test-db.js
+    │   └── test-logic.js
+    └── frontend
+        ├── README.md
+        ├── eslint.config.js
+        ├── index.html
+        ├── package.json
+        ├── postcss.config.js
+        ├── public
+        ├── src
+        │   ├── App.css
+        │   ├── App.jsx
+        │   ├── api.js
+        │   ├── assets
+        │   ├── components
+        │   │   └── MainLayout.jsx
+        │   ├── index.css
+        │   ├── main.jsx
+        │   ├── pages
+        │   │   ├── EditorPage.jsx
+        │   │   ├── Lobby.jsx
+        │   │   ├── Login.jsx
+        │   │   └── Signup.jsx
+        │   └── utils
+        │       └── generateOutput.js
+        ├── tailwind.config.js
+        └── vite.config.js
+
+=== File Contents ===
+
+--- File: backend\.env ---
+
+PORT=5000
+JWT_SECRET=fd8bb99e2b7f1c250653aea2f81c7b563789b0d8d12d962e2bca4669a4b0a2ab
+# Local PostgreSQL Configuration
+DB_NAME=colab_ide_db
+DB_USER=postgres
+DB_PASS=your_local_password
+DB_HOST=localhost
+DB_PORT=5432
+
+# URL format for Sequelize
+DB_URL=postgres://postgres:admin123@localhost:5432/colab_ide_db
+
+--- File: backend\package.json ---
+
+{
+  "name": "backend",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "nodemon server.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "archiver": "^7.0.1",
+    "bcryptjs": "^3.0.3",
+    "cors": "^2.8.6",
+    "dotenv": "^17.3.1",
+    "express": "^5.2.1",
+    "jsonwebtoken": "^9.0.3",
+    "pg": "^8.20.0",
+    "pg-hstore": "^2.3.4",
+    "pino": "^10.3.1",
+    "pino-pretty": "^13.1.3",
+    "sequelize": "^6.37.8",
+    "socket.io": "^4.8.3",
+    "socket.io-client": "^4.8.3",
+    "y-protocols": "^1.0.7",
+    "yjs": "^13.6.30"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.14"
+  }
+}
+
+
+--- File: backend\server.js ---
+
+import express from 'express';
+import { createServer } from 'http';
+import { Server } from 'socket.io';
+import { setupSockets } from './sockets/socketHandlers.js';
+import cors from 'cors';
+import dotenv from 'dotenv';
+import pino from 'pino';
+import sequelize from './config/db.js';
+import authRoutes from './routes/authRoutes.js';
+import roomRoutes from './routes/roomRoutes.js';
+import fileRoutes from './routes/fileRoutes.js';
+import exportRoutes from './routes/exportRoutes.js';
+import projectRoutes from './routes/projectRoutes.js';
+
+dotenv.config();
+const logger = pino({ transport: { target: 'pino-pretty' } });
+const app = express();
+const httpServer = createServer(app);
+
+const io = new Server(httpServer, {
+  cors: {
+    origin: "*", // In production, replace with your frontend URL
+    methods: ["GET", "POST"]
+  }
+});
+
+// Middleware
+app.use(cors());
+app.use(express.json()); // Essential for parsing JSON bodies from requests
+
+// Routes
+app.use('/api/auth', authRoutes);
+app.use('/api/rooms', roomRoutes);
+app.use('/api/files', fileRoutes);
+app.use('/api/export', exportRoutes);
+app.use('/api/projects', projectRoutes);
+
+// Socket Init
+setupSockets(io);
+
+// Database Sync & Server Start
+const PORT = process.env.PORT || 5000;
+
+async function startServer() {
+  try {
+    await sequelize.authenticate();
+    logger.info('Database connection established.');
+
+    // sync({ force: false }) ensures we don't delete our test user data every restart
+    await sequelize.sync({ force: false });
+
+    // Use httpServer.listen instead of app.listen
+    httpServer.listen(PORT, () => {
+      logger.info(`Server running on http://localhost:${PORT}`);
+    });
+  } catch (error) {
+    logger.error('Unable to connect to the database:', error);
+  }
+}
+
+startServer();
+
+--- File: backend\test-client.js ---
+
+import { io } from 'socket.io-client';
+
+// We need to install the client first: npm install socket.io-client
+const socket = io('http://localhost:5000');
+
+socket.on('connect', () => {
+  console.log('✅ Connected to Server! ID:', socket.id);
+
+  // Test Joining a Room
+  socket.emit('join-room', { roomId: 'room-123', username: 'Tester' });
+});
+
+socket.on('user-joined', (data) => {
+  console.log('👤 Notification:', data.username, 'has joined the room.');
+});
+
+socket.on('connect_error', (err) => {
+  console.log('❌ Connection Error:', err.message);
+});
+
+--- File: backend\test-db.js ---
+
+import sequelize from './config/db.js';
+import './models/index.js'; 
+
+const testConnection = async () => {
+  try {
+    console.log('Connecting to Supabase...');
+    await sequelize.authenticate();
+    console.log('Connection established! Syncing models...');
+    
+    // This creates the tables in Supabase based on your models
+    await sequelize.sync({ force: true }); 
+    
+    console.log('Database synced successfully. All tables created.');
+    process.exit(0);
+  } catch (error) {
+    console.error('Database connection failed:', error);
+    process.exit(1);
+  }
+};
+
+testConnection();
+
+--- File: backend\test-logic.js ---
+
+import AuthService from './services/AuthService.js';
+import sequelize from './config/db.js';
+
+async function test() {
+  try {
+    console.log("Testing Registration...");
+    const user = await AuthService.register("dev_tester", "test@colab.com", "Password123");
+    console.log("User Created:", user.username);
+
+    console.log("Testing Login...");
+    const session = await AuthService.login("test@colab.com", "Password123");
+    console.log("Login Success! Token generated.");
+    process.exit(0);
+  } catch (e) {
+    console.error("Test Failed:", e.message);
+    process.exit(1);
+  }
+}
+test();
+
+--- File: backend\config\db.js ---
+
+import { Sequelize } from 'sequelize';
+import dotenv from 'dotenv';
+
+dotenv.config();
+
+const isLocal = process.env.DB_HOST === 'localhost';
+
+const sequelize = new Sequelize(process.env.DB_URL, {
+  dialect: 'postgres',
+  logging: false, 
+  dialectOptions: isLocal ? {} : {
+    ssl: {
+      require: true,
+      rejectUnauthorized: false 
+    }
+  },
+  pool: {
+    max: 5,
+    min: 0,
+    acquire: 60000,
+    idle: 10000
+  }
+});
+
+export default sequelize;
+
+--- File: backend\controllers\AuthController.js ---
+
+import AuthService from '../services/AuthService.js';
+
+class AuthController {
+  async register(req, res) {
+    try {
+      const { username, email, password } = req.body;
+      const user = await AuthService.register(username, email, password);
+      res.status(201).json({ message: 'User registered successfully', userId: user.id });
+    } catch (error) {
+      res.status(400).json({ error: error.message });
+    }
+  }
+
+  async login(req, res) {
+    try {
+      const { email, password } = req.body;
+      const data = await AuthService.login(email, password);
+      res.status(200).json(data);
+    } catch (error) {
+      res.status(401).json({ error: error.message });
+    }
+  }
+}
+
+export default new AuthController();
+
+--- File: backend\controllers\ExportController.js ---
+
+import ExportService from '../services/ExportService.js';
+import path from 'path';
+import fs from 'fs';
+
+class ExportController {
+    async download(req, res) {
+        try {
+            const { roomId } = req.params;
+            const adminId = req.user.id; // From authMiddleware
+
+            const filePath = await ExportService.exportSession(roomId, adminId);
+
+            // Send the file to the client
+            res.download(filePath, `session_${roomId}.zip`, (err) => {
+                if (err) {
+                    res.status(500).send({ error: "Could not download the file" });
+                }
+                // Cleanup: delete local zip after download to save space
+                fs.unlinkSync(filePath);
+            });
+        } catch (error) {
+            res.status(400).json({ error: error.message });
+        }
+    }
+}
+
+export default new ExportController();
+
+--- File: backend\controllers\FileController.js ---
+
+import FileService from '../services/FileService.js';
+import { File } from '../models/index.js';
+
+class FileController {
+  async create(req, res) {
+    try {
+      const { name, language, roomId } = req.body;
+
+      // 1. Validation: Unique name in room
+      const existingFile = await File.findOne({ where: { name, RoomId: roomId } });
+      if (existingFile) {
+        return res.status(400).json({ error: "File name already exists in this room." });
+      }
+
+      // 2. Create the file
+      const file = await File.create({
+        name,
+        language: language.toLowerCase(),
+        content: '',
+        RoomId: roomId
+      });
+
+      res.status(201).json(file);
+    } catch (error) {
+      res.status(400).json({ error: error.message });
+    }
+  }
+
+  async delete(req, res) {
+    try {
+      const { id } = req.params;
+      const deleted = await File.destroy({ where: { id } });
+      if (!deleted) return res.status(404).json({ error: "File not found" });
+      res.status(200).json({ message: "Deleted successfully" });
+    } catch (error) {
+      res.status(500).json({ error: error.message });
+    }
+  }
+
+  async getFiles(req, res) {
+    try {
+      const files = await FileService.getRoomFiles(req.params.roomId);
+      res.status(200).json(files);
+    } catch (error) {
+      res.status(400).json({ error: error.message });
+    }
+  }
+}
+
+export default new FileController();
+
+--- File: backend\controllers\ProjectController.js ---
+
+import { Room, File } from '../models/index.js';
+
+class ProjectController {
+    /**
+     * Fetches project content (HTML, CSS, JS) from a specific room
+     */
+    async getProject(req, res) {
+        try {
+            const { id } = req.params;
+            const room = await Room.findByPk(id);
+
+            if (!room) {
+                return res.status(404).json({ error: "Room not found" });
+            }
+
+            // Return the code stored in the room model
+            res.json({
+                html: room.htmlContent || "",
+                css: room.cssContent || "",
+                js: room.jsContent || ""
+            });
+        } catch (error) {
+            res.status(500).json({ error: error.message });
+        }
+    }
+
+    /**
+     * Updates and persists project content to the database
+     */
+    async updateProject(req, res) {
+        try {
+            const { id } = req.params;
+            const { html, css, js } = req.body;
+
+            const room = await Room.findByPk(id);
+            if (!room) {
+                return res.status(404).json({ error: "Room not found" });
+            }
+
+            // Update the content columns in the Room table
+            room.htmlContent = html;
+            room.cssContent = css;
+            room.jsContent = js;
+            await room.save();
+
+            res.json({ message: "Project saved successfully", room });
+        } catch (error) {
+            res.status(500).json({ error: error.message });
+        }
+    }
+
+    async getProjectFiles(req, res) {
+        try {
+            const { id: roomId } = req.params;
+
+            // 1. Try to find files
+            let files = await File.findAll({ where: { RoomId: roomId } });
+
+            // 2. If no files, try to create them
+            if (files.length === 0) {
+                try {
+                    files = await File.bulkCreate([
+                        { name: 'index.html', content: '<h1>New Project</h1>', language: 'html', RoomId: roomId },
+                        { name: 'style.css', content: '', language: 'css', RoomId: roomId },
+                        { name: 'script.js', content: 'console.log("Hello World");', language: 'javascript', RoomId: roomId }
+                    ]);
+                } catch (createError) {
+                    // If another request created them at the exact same time, 
+                    // just fetch them again.
+                    files = await File.findAll({ where: { RoomId: roomId } });
+                }
+            }
+
+            res.json(files);
+        } catch (error) {
+            res.status(500).json({ error: error.message });
+        }
+    }
+
+    /**
+     * Saves the content of a specific file.
+     */
+    async saveFileContent(req, res) {
+        try {
+            const { fileId } = req.params;
+            const { content } = req.body;
+
+            const file = await File.findByPk(fileId);
+            if (!file) return res.status(404).json({ error: "File not found" });
+
+            file.content = content;
+            await file.save();
+
+            res.json({ message: "File saved successfully", file });
+        } catch (error) {
+            res.status(500).json({ error: error.message });
+        }
+    }
+
+    /**
+     * Renames a file with a check for duplicates within the same room.
+     */
+    async renameFile(req, res) {
+        try {
+            const { fileId } = req.params;
+            const { name } = req.body;
+
+            const file = await File.findByPk(fileId);
+            if (!file) return res.status(404).json({ error: "File not found" });
+
+            // Unique Name Check: Check if another file in the same room has this name
+            const duplicate = await File.findOne({
+                where: { name, RoomId: file.RoomId }
+            });
+
+            if (duplicate && duplicate.id !== fileId) {
+                return res.status(400).json({ error: "A file with this name already exists in this room." });
+            }
+
+            file.name = name;
+            await file.save();
+
+            res.json({ message: "Renamed successfully", file });
+        } catch (error) {
+            res.status(500).json({ error: error.message });
+        }
+    }
+}
+
+// Export a new instance to match the pattern used in AuthController and RoomController
+export default new ProjectController();
+
+--- File: backend\controllers\RoomController.js ---
+
+import RoomService from '../services/RoomService.js';
+
+class RoomController {
+  async create(req, res) {
+    try {
+      const { name } = req.body;
+      const adminId = req.user.id; // From authMiddleware
+      const room = await RoomService.createRoom(name, adminId);
+      res.status(201).json(room);
+    } catch (error) {
+      res.status(400).json({ error: error.message });
+    }
+  }
+
+  async getRoom(req, res) {
+    try {
+      const room = await RoomService.getRoomDetails(req.params.id);
+      res.status(200).json(room);
+    } catch (error) {
+      res.status(404).json({ error: error.message });
+    }
+  }
+}
+
+export default new RoomController();
+
+--- File: backend\middleware\authMiddleware.js ---
+
+import jwt from 'jsonwebtoken';
+
+const protect = (req, res, next) => {
+  let token;
+
+  if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
+    try {
+      token = req.headers.authorization.split(' ')[1];
+      const decoded = jwt.verify(token, process.env.JWT_SECRET || 'dev_secret_key');
+      
+      // Attach user info to the request object for use in controllers
+      req.user = decoded;
+      next();
+    } catch (error) {
+      res.status(401).json({ error: 'Not authorized, token failed' });
+    }
+  }
+
+  if (!token) {
+    res.status(401).json({ error: 'Not authorized, no token' });
+  }
+};
+
+export { protect };
+
+--- File: backend\models\File.js ---
+
+import { DataTypes } from 'sequelize';
+import sequelize from '../config/db.js';
+
+const File = sequelize.define('File', {
+  id: {
+    type: DataTypes.UUID,
+    defaultValue: DataTypes.UUIDV4,
+    primaryKey: true
+  },
+  name: {
+    type: DataTypes.STRING,
+    allowNull: false
+  },
+  content: {
+    type: DataTypes.TEXT,
+    defaultValue: ''
+  },
+  language: {
+    type: DataTypes.STRING, // HTML, CSS, or JS
+    allowNull: false
+  },
+  indexes: [
+    {
+      unique: true,
+      fields: ['name', 'RoomId'] // This prevents the duplicate index.html issue
+    }
+  ]
+});
+
+export default File;
+
+--- File: backend\models\index.js ---
+
+import User from './User.js';
+import Room from './Room.js';
+import File from './File.js';
+import Participant from './Participant.js';
+
+// User <-> Room (Many-to-Many via Participant)
+User.belongsToMany(Room, { through: Participant });
+Room.belongsToMany(User, { through: Participant });
+
+// Participant explicit links (helpful for querying roles later)
+Participant.belongsTo(User);
+Participant.belongsTo(Room);
+
+// Room <-> File (One-to-Many)
+Room.hasMany(File, { onDelete: 'CASCADE' });
+File.belongsTo(Room);
+
+export { User, Room, File, Participant };
+
+--- File: backend\models\Participant.js ---
+
+import { DataTypes } from 'sequelize';
+import sequelize from '../config/db.js';
+
+const Participant = sequelize.define('Participant', {
+  id: {
+    type: DataTypes.UUID,
+    defaultValue: DataTypes.UUIDV4,
+    primaryKey: true
+  },
+  role: {
+    type: DataTypes.ENUM('ADMIN', 'EDITOR', 'VIEWER'),
+    defaultValue: 'VIEWER',
+    allowNull: false
+  }
+});
+
+export default Participant;
+
+--- File: backend\models\Room.js ---
+
+import { DataTypes } from 'sequelize';
+import sequelize from '../config/db.js';
+
+const Room = sequelize.define('Room', {
+  id: {
+    type: DataTypes.UUID,
+    defaultValue: DataTypes.UUIDV4,
+    primaryKey: true,
+  },
+  name: {
+    type: DataTypes.STRING,
+    allowNull: false,
+  }
+});
+
+export default Room;
+
+--- File: backend\models\User.js ---
+
+import { DataTypes } from 'sequelize';
+import sequelize from '../config/db.js';
+
+const User = sequelize.define('User', {
+  id: {
+    type: DataTypes.UUID,
+    defaultValue: DataTypes.UUIDV4,
+    primaryKey: true
+  },
+  username: {
+    type: DataTypes.STRING,
+    allowNull: false,
+    unique: true
+  },
+  email: {
+    type: DataTypes.STRING,
+    allowNull: false,
+    unique: true,
+    validate: { isEmail: true }
+  },
+  password: {
+    type: DataTypes.STRING,
+    allowNull: false
+  }
+});
+
+export default User;
+
+--- File: backend\repositories\FileRepository.js ---
+
+import { File } from '../models/index.js';
+
+class FileRepository {
+  async createFile(fileData) {
+    return await File.create(fileData);
+  }
+
+  async getFilesByRoom(roomId) {
+    return await File.findAll({ where: { RoomId: roomId } });
+  }
+
+  async deleteFile(fileId) {
+    return await File.destroy({ where: { id: fileId } });
+  }
+
+  async findById(id) {
+    return await File.findByPk(id);
+  }
+
+  async deleteFile(id) {
+    return await File.destroy({ where: { id } });
+  }
+}
+
+export default new FileRepository();
+
+--- File: backend\repositories\RoomRepository.js ---
+
+import { Room } from '../models/index.js';
+
+class RoomRepository {
+  async create(roomData) {
+    return await Room.create(roomData);
+  }
+
+  async findById(id) {
+    return await Room.findByPk(id);
+  }
+
+  async update(id, updateData) {
+    return await Room.update(updateData, { where: { id } });
+  }
+}
+
+export default new RoomRepository();
+
+--- File: backend\repositories\UserRepository.js ---
+
+import User from '../models/User.js';
+
+class UserRepository {
+  // Logic to save a new user to the database
+  async create(userData) {
+    return await User.create(userData);
+  }
+
+  // Logic to find a user by email for login/registration checks
+  async findByEmail(email) {
+    return await User.findOne({ where: { email } });
+  }
+
+  // Logic to find a user by their unique ID
+  async findById(id) {
+    return await User.findByPk(id);
+  }
+}
+
+export default new UserRepository();
+
+--- File: backend\routes\authRoutes.js ---
+
+import express from 'express';
+import AuthController from '../controllers/AuthController.js';
+
+const router = express.Router();
+
+router.post('/register', (req, res) => AuthController.register(req, res));
+router.post('/login', (req, res) => AuthController.login(req, res));
+
+export default router;
+
+--- File: backend\routes\exportRoutes.js ---
+
+import express from 'express';
+import ExportController from '../controllers/ExportController.js';
+import { protect } from '../middleware/authMiddleware.js';
+
+const router = express.Router();
+
+// Only protected users can export
+router.get('/:roomId', protect, (req, res) => ExportController.download(req, res));
+
+export default router;
+
+--- File: backend\routes\fileRoutes.js ---
+
+import express from 'express';
+import FileController from '../controllers/FileController.js';
+import { protect } from '../middleware/authMiddleware.js';
+
+const router = express.Router();
+
+// Apply 'protect' middleware so only logged-in users can manage files
+router.post('/', protect, (req, res) => FileController.create(req, res));
+router.get('/room/:roomId', protect, (req, res) => FileController.getFiles(req, res));
+router.delete('/:id', protect, (req, res) => FileController.delete(req, res));
+
+export default router;
+
+--- File: backend\routes\projectRoutes.js ---
+
+import express from 'express';
+import ProjectController from '../controllers/ProjectController.js';
+import { protect } from '../middleware/authMiddleware.js';
+
+const router = express.Router();
+
+router.get('/room/:id', protect, (req, res) => ProjectController.getProjectFiles(req, res));
+router.put('/file/:fileId', protect, (req, res) => ProjectController.saveFileContent(req, res));
+router.patch('/file/:fileId/rename', protect, (req, res) => ProjectController.renameFile(req, res));
+export default router;
+
+--- File: backend\routes\roomRoutes.js ---
+
+import express from 'express';
+import RoomController from '../controllers/RoomController.js';
+import { protect } from '../middleware/authMiddleware.js';
+
+const router = express.Router();
+
+// All room routes require a valid token
+router.post('/', protect, (req, res) => RoomController.create(req, res));
+router.get('/:id', protect, (req, res) => RoomController.getRoom(req, res));
+
+export default router;
+
+--- File: backend\services\AuthService.js ---
+
+import bcrypt from 'bcryptjs';
+import jwt from 'jsonwebtoken';
+import UserRepository from '../repositories/UserRepository.js';
+import dotenv from 'dotenv';
+
+dotenv.config();
+
+class AuthService {
+  async register(username, email, password) {
+    // 1. Check if user already exists [cite: 7]
+    const existingUser = await UserRepository.findByEmail(email);
+    if (existingUser) {
+      throw new Error('User already exists with this email');
+    }
+
+    // 2. Hash the password - Single Responsibility: Security [cite: 7]
+    const salt = await bcrypt.genSalt(10);
+    const hashedPassword = await bcrypt.hash(password, salt);
+
+    // 3. Save via Repository [cite: 11]
+    return await UserRepository.create({
+      username,
+      email,
+      password: hashedPassword
+    });
+  }
+
+  async login(email, password) {
+    const user = await UserRepository.findByEmail(email);
+    if (!user) {
+      throw new Error('Invalid credentials');
+    }
+
+    // Compare hashed password
+    const isMatch = await bcrypt.compare(password, user.password);
+    if (!isMatch) {
+      throw new Error('Invalid credentials');
+    }
+
+    // Generate JWT [cite: 6]
+    const token = jwt.sign(
+      { id: user.id, username: user.username },
+      process.env.JWT_SECRET || 'dev_secret_key',
+      { expiresIn: '24h' }
+    );
+
+    return { 
+      user: { id: user.id, username: user.username, email: user.email }, 
+      token 
+    };
+  }
+}
+
+export default new AuthService();
+
+--- File: backend\services\ExportService.js ---
+
+import archiver from 'archiver';
+import fs from 'fs';
+import path from 'path';
+import RoomRepository from '../repositories/RoomRepository.js';
+import FileRepository from '../repositories/FileRepository.js';
+
+class ExportService {
+    async exportSession(roomId, adminId) {
+        // 1. Verify Room & Permissions (Basic check)
+        const room = await RoomRepository.findById(roomId);
+        if (!room) throw new Error('Room not found');
+
+        // 2. Lock the room (Requirement: End Session locks room)
+        await RoomRepository.update(roomId, { isLocked: true });
+
+        // 3. Fetch all files
+        const files = await FileRepository.getFilesByRoom(roomId);
+
+        // 4. Create ZIP stream
+        const archive = archiver('zip', { zlib: { level: 9 } });
+        const outputPath = path.join(process.cwd(), `session_${roomId}.zip`);
+        const output = fs.createWriteStream(outputPath);
+
+        return new Promise((resolve, reject) => {
+            output.on('close', () => resolve(outputPath));
+            archive.on('error', (err) => reject(err));
+
+            archive.pipe(output);
+
+            // Add files to ZIP
+            files.forEach(file => {
+                archive.append(file.content, { name: `${file.name}` });
+            });
+
+            // Add Activity Report (Requirement)
+            const report = `Session Report\nRoom: ${room.name}\nExported at: ${new Date().toISOString()}`;
+            archive.append(report, { name: 'Session_Report.txt' });
+
+            archive.finalize();
+        });
+    }
+}
+
+export default new ExportService();
+
+--- File: backend\services\FileService.js ---
+
+import FileRepository from '../repositories/FileRepository.js';
+
+class FileService {
+  async createFile(name, language, roomId) {
+    // Validates supported languages (Phase 1) [cite: 6]
+    const supportedLanguages = ['html', 'css', 'javascript'];
+    if (!supportedLanguages.includes(language.toLowerCase())) {
+      throw new Error('Unsupported language');
+    }
+
+    return await FileRepository.createFile({
+      name,
+      language,
+      RoomId: roomId
+    });
+  }
+
+  async updateContent(fileId, content) {
+    // This will be called by our WebSocket sync later
+    const file = await FileRepository.findById(fileId);
+    if (!file) throw new Error('File not found');
+
+    file.content = content;
+    return await file.save();
+  }
+
+  async getRoomFiles(roomId) {
+    return await FileRepository.getFilesByRoom(roomId);
+  }
+  
+  async removeFile(fileId) {
+    const deleted = await FileRepository.deleteFile(fileId);
+    if (!deleted) throw new Error('File not found or already deleted');
+    return { message: 'File deleted successfully' };
+  }
+}
+
+export default new FileService();
+
+--- File: backend\services\RoomService.js ---
+
+import RoomRepository from '../repositories/RoomRepository.js';
+import { Participant } from '../models/index.js';
+
+class RoomService {
+  async createRoom(name, adminUserId) {
+    // 1. Create the Room
+    const room = await RoomRepository.create({ name });
+
+    // 2. Assign the creator as the ADMIN (Single Responsibility)
+    await Participant.create({
+      UserId: adminUserId,
+      RoomId: room.id,
+      role: 'ADMIN'
+    });
+
+    return room;
+  }
+
+  async getRoomDetails(roomId) {
+    const room = await RoomRepository.findById(roomId);
+    if (!room) throw new Error('Room not found');
+    return room;
+  }
+
+  async joinRoom(roomId, userId) {
+    // Check if already a participant
+    const existing = await Participant.findOne({ where: { RoomId: roomId, UserId: userId } });
+    if (existing) return existing;
+
+    // Join as VIEWER by default (Interface Segregation principle)
+    return await Participant.create({
+      UserId: userId,
+      RoomId: roomId,
+      role: 'VIEWER'
+    });
+  }
+}
+
+export default new RoomService();
+
+--- File: backend\sockets\socketHandlers.js ---
+
+import pino from 'pino';
+const logger = pino({ transport: { target: 'pino-pretty' } });
+
+export const setupSockets = (io) => {
+  io.on('connection', (socket) => {
+    logger.info(`User connected: ${socket.id}`);
+
+    // 1. Join Room Logic
+    socket.on('join-room', ({ roomId, username }) => {
+      socket.join(roomId);
+      logger.info(`User ${username} joined room: ${roomId}`);
+
+      // Notify others in the room
+      socket.to(roomId).emit('user-joined', { username, socketId: socket.id });
+    });
+
+    // 2. Chat Message Logic (Requirement: Room-level chat)
+    socket.on('send-message', ({ roomId, message, sender }) => {
+      io.to(roomId).emit('receive-message', {
+        text: message,
+        sender,
+        timestamp: new Date()
+      });
+    });
+
+    // 3. Code Sync (Simple Version - later we will integrate Yjs)
+    socket.on('code-change', ({ roomId, fileId, content }) => {
+      socket.to(roomId).emit('code-update', { fileId, content });
+    });
+
+    // 4. Cursor Movement (Requirement: See cursor movements)
+    socket.on('cursor-move', ({ roomId, username, cursorData }) => {
+      socket.to(roomId).emit('cursor-update', { username, cursorData });
+    });
+
+    socket.on('disconnect', () => {
+      logger.info(`User disconnected: ${socket.id}`);
+    });
+  });
+};
+
+--- File: frontend\eslint.config.js ---
+
+import js from '@eslint/js'
+import globals from 'globals'
+import reactHooks from 'eslint-plugin-react-hooks'
+import reactRefresh from 'eslint-plugin-react-refresh'
+import { defineConfig, globalIgnores } from 'eslint/config'
+
+export default defineConfig([
+  globalIgnores(['dist']),
+  {
+    files: ['**/*.{js,jsx}'],
+    extends: [
+      js.configs.recommended,
+      reactHooks.configs.flat.recommended,
+      reactRefresh.configs.vite,
+    ],
+    languageOptions: {
+      ecmaVersion: 2020,
+      globals: globals.browser,
+      parserOptions: {
+        ecmaVersion: 'latest',
+        ecmaFeatures: { jsx: true },
+        sourceType: 'module',
+      },
+    },
+    rules: {
+      'no-unused-vars': ['error', { varsIgnorePattern: '^[A-Z_]' }],
+    },
+  },
+])
+
+
+--- File: frontend\index.html ---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>frontend</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>
+
+
+--- File: frontend\package.json ---
+
+{
+  "name": "frontend",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "lint": "eslint .",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@monaco-editor/react": "^4.7.0",
+    "axios": "^1.13.6",
+    "lucide-react": "^0.577.0",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "react-router-dom": "^7.13.1",
+    "socket.io-client": "^4.8.3",
+    "y-protocols": "^1.0.7",
+    "y-socket.io": "^1.1.3",
+    "y-webrtc": "^10.3.0",
+    "yjs": "^13.6.30"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.4",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.0",
+    "autoprefixer": "^10.4.27",
+    "eslint": "^9.39.4",
+    "eslint-plugin-react-hooks": "^7.0.1",
+    "eslint-plugin-react-refresh": "^0.5.2",
+    "globals": "^17.4.0",
+    "postcss": "^8.5.8",
+    "tailwindcss": "3.4",
+    "vite": "^8.0.0"
+  }
+}
+
+
+--- File: frontend\postcss.config.js ---
+
+export default {
+  plugins: {
+    tailwindcss: {},
+    autoprefixer: {},
+  },
+}
+
+
+--- File: frontend\README.md ---
+
+# React + Vite
+
+This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+
+Currently, two official plugins are available:
+
+- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
+- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+
+## React Compiler
+
+The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+
+## Expanding the ESLint configuration
+
+If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+
+
+--- File: frontend\tailwind.config.js ---
+
+/** @type {import('tailwindcss').Config} */
+export default {
+  content: [
+    "./index.html",
+    "./src/**/*.{js,ts,jsx,tsx}",
+  ],
+  theme: {
+    extend: {
+      colors: {
+        // "IDE Dark" theme colors
+        editor: '#1e1e1e',
+        sidebar: '#252526',
+        activity: '#333333',
+        accent: '#007acc'
+      }
+    },
+  },
+  plugins: [],
+}
+
+--- File: frontend\vite.config.js ---
+
+import { defineConfig } from 'vite'
+import react from '@vitejs/plugin-react'
+
+// https://vite.dev/config/
+export default defineConfig({
+  plugins: [react()],
+})
+
+
+--- File: frontend\src\api.js ---
+
+import axios from 'axios';
+
+// Create a central axios instance with your backend base URL
+const api = axios.create({
+    baseURL: 'http://localhost:5000/api',
+});
+
+// Interceptor to attach the JWT token to every request automatically
+api.interceptors.request.use((config) => {
+    const token = localStorage.getItem('token');
+    if (token) {
+        config.headers.Authorization = `Bearer ${token}`;
+    }
+    return config;
+});
+
+export default api;
+
+--- File: frontend\src\App.css ---
+
+.counter {
+  font-size: 16px;
+  padding: 5px 10px;
+  border-radius: 5px;
+  color: var(--accent);
+  background: var(--accent-bg);
+  border: 2px solid transparent;
+  transition: border-color 0.3s;
+  margin-bottom: 24px;
+
+  &:hover {
+    border-color: var(--accent-border);
+  }
+  &:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+}
+
+.hero {
+  position: relative;
+
+  .base,
+  .framework,
+  .vite {
+    inset-inline: 0;
+    margin: 0 auto;
+  }
+
+  .base {
+    width: 170px;
+    position: relative;
+    z-index: 0;
+  }
+
+  .framework,
+  .vite {
+    position: absolute;
+  }
+
+  .framework {
+    z-index: 1;
+    top: 34px;
+    height: 28px;
+    transform: perspective(2000px) rotateZ(300deg) rotateX(44deg) rotateY(39deg)
+      scale(1.4);
+  }
+
+  .vite {
+    z-index: 0;
+    top: 107px;
+    height: 26px;
+    width: auto;
+    transform: perspective(2000px) rotateZ(300deg) rotateX(40deg) rotateY(39deg)
+      scale(0.8);
+  }
+}
+
+#center {
+  display: flex;
+  flex-direction: column;
+  gap: 25px;
+  place-content: center;
+  place-items: center;
+  flex-grow: 1;
+
+  @media (max-width: 1024px) {
+    padding: 32px 20px 24px;
+    gap: 18px;
+  }
+}
+
+#next-steps {
+  display: flex;
+  border-top: 1px solid var(--border);
+  text-align: left;
+
+  & > div {
+    flex: 1 1 0;
+    padding: 32px;
+    @media (max-width: 1024px) {
+      padding: 24px 20px;
+    }
+  }
+
+  .icon {
+    margin-bottom: 16px;
+    width: 22px;
+    height: 22px;
+  }
+
+  @media (max-width: 1024px) {
+    flex-direction: column;
+    text-align: center;
+  }
+}
+
+#docs {
+  border-right: 1px solid var(--border);
+
+  @media (max-width: 1024px) {
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+  }
+}
+
+#next-steps ul {
+  list-style: none;
+  padding: 0;
+  display: flex;
+  gap: 8px;
+  margin: 32px 0 0;
+
+  .logo {
+    height: 18px;
+  }
+
+  a {
+    color: var(--text-h);
+    font-size: 16px;
+    border-radius: 6px;
+    background: var(--social-bg);
+    display: flex;
+    padding: 6px 12px;
+    align-items: center;
+    gap: 8px;
+    text-decoration: none;
+    transition: box-shadow 0.3s;
+
+    &:hover {
+      box-shadow: var(--shadow);
+    }
+    .button-icon {
+      height: 18px;
+      width: 18px;
+    }
+  }
+
+  @media (max-width: 1024px) {
+    margin-top: 20px;
+    flex-wrap: wrap;
+    justify-content: center;
+
+    li {
+      flex: 1 1 calc(50% - 8px);
+    }
+
+    a {
+      width: 100%;
+      justify-content: center;
+      box-sizing: border-box;
+    }
+  }
+}
+
+#spacer {
+  height: 88px;
+  border-top: 1px solid var(--border);
+  @media (max-width: 1024px) {
+    height: 48px;
+  }
+}
+
+.ticks {
+  position: relative;
+  width: 100%;
+
+  &::before,
+  &::after {
+    content: '';
+    position: absolute;
+    top: -4.5px;
+    border: 5px solid transparent;
+  }
+
+  &::before {
+    left: 0;
+    border-left-color: var(--border);
+  }
+  &::after {
+    right: 0;
+    border-right-color: var(--border);
+  }
+}
+
+
+--- File: frontend\src\App.jsx ---
+
+import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
+import Login from './pages/Login';
+import Signup from './pages/Signup';
+import Lobby from './pages/Lobby';
+import EditorPage from './pages/EditorPage';
+
+function App() {
+  return (
+    <Router>
+      <Routes>
+        <Route path="/login" element={<Login />} />
+        <Route path="/signup" element={<Signup />} />
+        <Route path="/lobby" element={<Lobby />} />
+        {/* We will protect this route later */}
+        <Route path="/editor/:roomId" element={<EditorPage />} />
+        <Route path="/" element={<Navigate to="/login" />} />
+      </Routes>
+    </Router>
+  );
+}
+
+export default App;
+
+--- File: frontend\src\index.css ---
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  /* Prevents double scrollbars in IDE */
+  background-color: #1e1e1e;
+  color: white;
+}
+
+--- File: frontend\src\main.jsx ---
+
+import { StrictMode } from 'react'
+import { createRoot } from 'react-dom/client'
+import './index.css'
+import App from './App.jsx'
+
+createRoot(document.getElementById('root')).render(
+  <StrictMode>
+    <App />
+  </StrictMode>,
+)
+
+
+--- File: frontend\src\components\MainLayout.jsx ---
+
+import React, { useState } from 'react';
+import { Files, MessageSquare, Users, Settings } from 'lucide-react';
+
+const MainLayout = ({ children, sidebarContent }) => {
+    const [activeTab, setActiveTab] = useState('files');
+
+    return (
+        <div className="flex h-screen w-screen bg-editor text-gray-300 font-sans">
+            {/* 1. Activity Bar (Slim Left) */}
+            <div className="w-12 bg-activity flex flex-col items-center py-4 space-y-6 border-r border-white/10">
+                <Files 
+                    className={`cursor-pointer ${activeTab === 'files' ? 'text-white' : 'text-gray-500'}`} 
+                    onClick={() => setActiveTab('files')} 
+                />
+                <MessageSquare 
+                    className={`cursor-pointer ${activeTab === 'chat' ? 'text-white' : 'text-gray-500'}`} 
+                    onClick={() => setActiveTab('chat')} 
+                />
+                <Users className="text-gray-500 cursor-pointer" />
+                <div className="flex-grow"></div>
+                <Settings className="text-gray-500 cursor-pointer mb-2" />
+            </div>
+
+            {/* 2. Side Pane (Now receives content from EditorPage) */}
+            <div className="w-64 bg-sidebar border-r border-white/10 flex flex-col">
+                <div className="p-3 uppercase text-xs font-bold tracking-widest text-gray-500 border-b border-white/5">
+                    {activeTab}
+                </div>
+                <div className="flex-grow">
+                    {activeTab === 'files' ? sidebarContent : (
+                        <div className="p-4 text-sm text-gray-500">Chat coming soon...</div>
+                    )}
+                </div>
+            </div>
+
+            {/* 3. Main Editor Area */}
+            <div className="flex-grow flex flex-col overflow-hidden">
+                {children}
+            </div>
+        </div>
+    );
+};
+
+export default MainLayout;
+
+--- File: frontend\src\pages\EditorPage.jsx ---
+
+import React, { useState, useEffect } from 'react';
+import { useParams } from 'react-router-dom';
+import MainLayout from '../components/MainLayout';
+import Editor from '@monaco-editor/react';
+import { Save, Play, Code2, FileJson, Hash, Layout, Plus, Trash2, Edit3 } from 'lucide-react';
+import { generateOutput } from '../utils/generateOutput';
+import api from '../api';
+
+const EditorPage = () => {
+    const [files, setFiles] = useState([]);
+    const [activeFileId, setActiveFileId] = useState(null);
+    const [srcDoc, setSrcDoc] = useState('');
+    const [logs, setLogs] = useState([]);
+    const [showPreview, setShowPreview] = useState(true);
+    const [executionKey, setExecutionKey] = useState(0);
+    const { roomId } = useParams();
+
+    const [menuPos, setMenuPos] = useState(null);
+    const [selectedFileId, setSelectedFileId] = useState(null);
+
+    const activeFile = files.find(f => f.id === activeFileId);
+
+    // Fetch files on load and refresh
+    const fetchProject = async () => {
+        try {
+            const { data } = await api.get(`/projects/room/${roomId}`);
+            setFiles(data);
+            // On refresh, try to maintain selection or pick first
+            if (data.length > 0 && !activeFileId) {
+                setActiveFileId(data[0].id);
+            }
+        } catch (err) {
+            console.error("Failed to load project files", err);
+        }
+    };
+
+    useEffect(() => {
+        fetchProject();
+    }, [roomId]);
+
+    useEffect(() => {
+        const handleMessage = (event) => {
+            if (event.data.type === 'CONSOLE_LOG') {
+                setLogs(prev => [...prev, event.data.payload.join(' ')]);
+            }
+        };
+        window.addEventListener('message', handleMessage);
+        return () => window.removeEventListener('message', handleMessage);
+    }, []);
+
+    const createFile = async () => {
+        const fileName = prompt("Enter file name:");
+        if (!fileName) return;
+
+        // Frontend check for duplicate
+        if (files.some(f => f.name.toLowerCase() === fileName.toLowerCase())) {
+            alert("A file with this name already exists!");
+            return;
+        }
+
+        const extension = fileName.split('.').pop();
+        const langMap = { js: 'javascript', html: 'html', css: 'css' };
+
+        try {
+            const { data } = await api.post('/files', {
+                name: fileName,
+                content: '',
+                language: langMap[extension] || 'javascript',
+                roomId: roomId
+            });
+            setFiles(prev => [...prev, data]);
+            setActiveFileId(data.id);
+        } catch (err) {
+            alert(err.response?.data?.error || "Error creating file");
+        }
+    };
+
+    const saveProject = async () => {
+        if (!activeFileId || !activeFile) return;
+        try {
+            await api.put(`/projects/file/${activeFileId}`, { content: activeFile.content });
+            alert("Saved!");
+        } catch (err) {
+            alert("Save failed");
+        }
+    };
+
+    const deleteFile = async (id) => {
+        if (!window.confirm("Delete this file?")) return;
+        try {
+            await api.delete(`/files/${id}`);
+            const updated = files.filter(f => f.id !== id);
+            setFiles(updated);
+            if (activeFileId === id) setActiveFileId(updated[0]?.id || null);
+        } catch (err) { alert("Delete failed"); }
+    };
+
+    const renameFile = async (id, currentName) => {
+        const newName = prompt("New name:", currentName);
+        if (!newName || newName === currentName) return;
+
+        try {
+            await api.patch(`/projects/file/${id}/rename`, { name: newName });
+            setFiles(prev => prev.map(f => f.id === id ? { ...f, name: newName } : f));
+        } catch (err) {
+            alert(err.response?.data?.error || "Rename failed");
+        }
+    };
+
+    const runCode = () => {
+        setLogs([]);
+        const html = files.find(f => f.name.toLowerCase().endsWith('.html'))?.content || '';
+        const css = files.find(f => f.name.toLowerCase().endsWith('.css'))?.content || '';
+        const js = files.find(f => f.name.toLowerCase().endsWith('.js'))?.content || '';
+        setSrcDoc(generateOutput(html, css, js));
+        setExecutionKey(prev => prev + 1);
+    };
+
+    const handleContextMenu = (e, fileId) => {
+        e.preventDefault();
+        setMenuPos({ x: e.pageX, y: e.pageY });
+        setSelectedFileId(fileId);
+    };
+
+    const getFileIcon = (name) => {
+        if (name.endsWith('.html')) return <Code2 size={14} className="text-orange-500" />;
+        if (name.endsWith('.css')) return <Hash size={14} className="text-blue-400" />;
+        if (name.endsWith('.js')) return <FileJson size={14} className="text-yellow-400" />;
+        return <Plus size={14} className="text-gray-400" />;
+    };
+
+    const sidebarContent = (
+        <div className="flex flex-col h-full" onClick={() => setMenuPos(null)}>
+            <div className="p-3 border-b border-white/5 flex items-center justify-between">
+                <span className="text-[10px] text-gray-500 font-bold uppercase tracking-widest">Explorer</span>
+                <button onClick={createFile} className="p-1 hover:bg-white/10 rounded text-gray-400"><Plus size={14} /></button>
+            </div>
+            <div className="flex-grow overflow-y-auto">
+                {files.map(file => (
+                    <div
+                        key={file.id}
+                        onContextMenu={(e) => handleContextMenu(e, file.id)}
+                        onClick={() => setActiveFileId(file.id)}
+                        className={`px-4 py-1.5 text-sm cursor-pointer flex items-center gap-2 ${activeFileId === file.id ? 'bg-accent/20 text-white' : 'hover:bg-white/5 text-gray-400'}`}
+                    >
+                        {getFileIcon(file.name)} {file.name}
+                    </div>
+                ))}
+            </div>
+            {menuPos && (
+                <div className="fixed bg-sidebar border border-white/10 shadow-2xl rounded py-1 z-50 w-40" style={{ top: menuPos.y, left: menuPos.x }}>
+                    <button onClick={() => renameFile(selectedFileId, files.find(f => f.id === selectedFileId)?.name)} className="w-full text-left px-3 py-2 text-xs text-gray-300 hover:bg-accent hover:text-white flex items-center gap-2"><Edit3 size={12} /> Rename</button>
+                    <button onClick={() => deleteFile(selectedFileId)} className="w-full text-left px-3 py-2 text-xs text-red-400 hover:bg-red-500 hover:text-white flex items-center gap-2"><Trash2 size={12} /> Delete</button>
+                </div>
+            )}
+        </div>
+    );
+
+    return (
+        <MainLayout sidebarContent={sidebarContent}>
+            <div className="flex flex-col h-full" onClick={() => setMenuPos(null)}>
+                <div className="flex bg-sidebar border-b border-white/10 items-center px-2">
+                    <div className="flex overflow-x-auto flex-grow no-scrollbar">
+                        {files.map(file => (
+                            <button key={file.id} onClick={() => setActiveFileId(file.id)} className={`px-4 py-2 text-xs border-r border-white/5 whitespace-nowrap ${activeFileId === file.id ? 'bg-editor text-white border-t-2 border-t-accent' : 'text-gray-500'}`}>
+                                {file.name}
+                            </button>
+                        ))}
+                    </div>
+                    <div className="flex gap-1 ml-2">
+                        <button onClick={saveProject} className="p-2 text-accent hover:text-white"><Save size={16} /></button>
+                        <button onClick={runCode} className="p-2 text-green-500 hover:text-white"><Play size={16} /></button>
+                        <button onClick={() => setShowPreview(!showPreview)} className="p-2 text-gray-400 hover:text-white"><Layout size={16} /></button>
+                    </div>
+                </div>
+                <div className="flex flex-grow overflow-hidden">
+                    <div className={`${showPreview ? 'w-1/2' : 'w-full'} h-full border-r border-white/10`}>
+                        {activeFile ? (
+                            <Editor height="100%" theme="vs-dark" language={activeFile.language} value={activeFile.content} onChange={(v) => setFiles(prev => prev.map(f => f.id === activeFileId ? { ...f, content: v } : f))} />
+                        ) : <div className="p-10 text-gray-600 italic">Select a file...</div>}
+                    </div>
+                    {showPreview && (
+                        <div className="w-1/2 h-full flex flex-col bg-white">
+                            <iframe key={executionKey} srcDoc={srcDoc} className="flex-grow w-full border-none" sandbox="allow-scripts" />
+                            <div className="h-40 bg-editor border-t border-white/10 p-2 font-mono text-[10px] overflow-y-auto">
+                                <div className="text-gray-500 mb-1 border-b border-white/5 pb-1 flex justify-between uppercase"><span>Console</span><button onClick={() => setLogs([])}>Clear</button></div>
+                                {logs.map((log, i) => <div key={i} className="text-green-400 py-0.5 border-b border-white/5 last:border-none">{`> ${log}`}</div>)}
+                            </div>
+                        </div>
+                    )}
+                </div>
+            </div>
+        </MainLayout>
+    );
+};
+
+export default EditorPage;
+
+--- File: frontend\src\pages\Lobby.jsx ---
+
+import React, { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import api from '../api';
+
+const Lobby = () => {
+    const [roomName, setRoomName] = useState('');
+    const [isLoading, setIsLoading] = useState(false);
+    const navigate = useNavigate();
+
+    const handleCreateRoom = async (e) => {
+        e.preventDefault();
+        setIsLoading(true);
+        try {
+            // Hits your backend RoomController.create endpoint
+            // This endpoint creates the room and returns the room object with its ID
+            const { data } = await api.post('/rooms', { name: roomName });
+
+            // Redirect to the editor with the new unique room ID
+            navigate(`/editor/${data.id}`);
+        } catch (err) {
+            console.error(err);
+            alert(err.response?.data?.error || "Error creating room. Please try again.");
+        } finally {
+            setIsLoading(false);
+        }
+    };
+
+    return (
+        <div className="h-screen w-full bg-editor flex items-center justify-center text-white p-4">
+            <div className="bg-sidebar p-8 rounded-lg border border-white/10 w-full max-w-md shadow-2xl">
+                <div className="text-center mb-8">
+                    <h1 className="text-3xl font-bold text-white mb-2">Create a Workspace</h1>
+                    <p className="text-gray-400 text-sm">Give your room a name to start coding together</p>
+                </div>
+
+                <form onSubmit={handleCreateRoom} className="space-y-6">
+                    <div>
+                        <label className="block text-xs uppercase tracking-widest text-gray-500 font-bold mb-2">
+                            Room Name
+                        </label>
+                        <input
+                            type="text"
+                            placeholder="e.g. Portfolio Project, Bug Fix Session..."
+                            className="w-full p-3 bg-editor border border-white/10 rounded focus:border-accent outline-none transition-all"
+                            value={roomName}
+                            onChange={(e) => setRoomName(e.target.value)}
+                            required
+                        />
+                    </div>
+
+                    <button
+                        type="submit"
+                        disabled={isLoading}
+                        className={`w-full py-3 rounded font-bold transition-all flex items-center justify-center gap-2 ${isLoading
+                                ? 'bg-gray-600 cursor-not-allowed'
+                                : 'bg-accent hover:bg-blue-600 active:scale-95 text-white'
+                            }`}
+                    >
+                        {isLoading ? 'Creating Room...' : 'Start Coding'}
+                    </button>
+                </form>
+
+                <div className="mt-8 pt-6 border-t border-white/5">
+                    <p className="text-center text-xs text-gray-500 italic">
+                        Once created, you can invite others by sharing the URL.
+                    </p>
+                </div>
+            </div>
+        </div>
+    );
+};
+
+export default Lobby;
+
+--- File: frontend\src\pages\Login.jsx ---
+
+import React, { useState } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
+import api from '../api';
+
+const Login = () => {
+    const [email, setEmail] = useState('');
+    const [password, setPassword] = useState('');
+    const navigate = useNavigate();
+
+    const handleLogin = async (e) => {
+        e.preventDefault();
+        try {
+            // Send login request to your backend API
+            const { data } = await api.post('/auth/login', { email, password });
+
+            // Store the JWT and user info for persistence
+            localStorage.setItem('token', data.token);
+            localStorage.setItem('user', JSON.stringify(data.user));
+
+            // Redirect to the lobby instead of a hardcoded room
+            navigate('/lobby');
+        } catch (error) {
+            alert(error.response?.data?.error || "Login failed. Please check your credentials.");
+        }
+    };
+
+    return (
+        <div className="h-screen flex items-center justify-center bg-editor text-white">
+            <form onSubmit={handleLogin} className="bg-sidebar p-8 rounded-lg border border-white/10 w-96">
+                <h2 className="text-2xl font-bold mb-6 text-center">Welcome Back</h2>
+                <div className="space-y-4">
+                    <input
+                        type="email"
+                        placeholder="Email"
+                        className="w-full p-2 bg-editor border border-white/10 rounded focus:border-accent outline-none"
+                        value={email}
+                        onChange={(e) => setEmail(e.target.value)}
+                        required
+                    />
+                    <input
+                        type="password"
+                        placeholder="Password"
+                        className="w-full p-2 bg-editor border border-white/10 rounded focus:border-accent outline-none"
+                        value={password}
+                        onChange={(e) => setPassword(e.target.value)}
+                        required
+                    />
+                    <button type="submit" className="w-full py-2 bg-accent rounded font-bold hover:bg-blue-600 transition-colors">
+                        Login
+                    </button>
+                </div>
+                <p className="mt-4 text-sm text-gray-400 text-center">
+                    Don't have an account? <Link to="/signup" className="text-accent hover:underline">Sign up</Link>
+                </p>
+            </form>
+        </div>
+    );
+};
+
+export default Login;
+
+--- File: frontend\src\pages\Signup.jsx ---
+
+import React, { useState } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
+import api from '../api';
+
+const Signup = () => {
+    const [formData, setFormData] = useState({
+        username: '',
+        email: '',
+        password: ''
+    });
+    const navigate = useNavigate();
+
+    const handleSignup = async (e) => {
+        e.preventDefault();
+        try {
+            // Post registration data to backend
+            await api.post('/auth/register', formData);
+            alert("Account created successfully! Please login.");
+            navigate('/login');
+        } catch (error) {
+            alert(error.response?.data?.error || "Signup failed");
+        }
+    };
+
+    return (
+        <div className="h-screen flex items-center justify-center bg-editor text-white">
+            <form onSubmit={handleSignup} className="bg-sidebar p-8 rounded-lg border border-white/10 w-96">
+                <h2 className="text-2xl font-bold mb-6 text-center">Create Account</h2>
+                <div className="space-y-4">
+                    <input
+                        type="text"
+                        placeholder="Username"
+                        className="w-full p-2 bg-editor border border-white/10 rounded focus:border-accent outline-none"
+                        onChange={(e) => setFormData({ ...formData, username: e.target.value })}
+                        required
+                    />
+                    <input
+                        type="email"
+                        placeholder="Email Address"
+                        className="w-full p-2 bg-editor border border-white/10 rounded focus:border-accent outline-none"
+                        onChange={(e) => setFormData({ ...formData, email: e.target.value })}
+                        required
+                    />
+                    <input
+                        type="password"
+                        placeholder="Password"
+                        className="w-full p-2 bg-editor border border-white/10 rounded focus:border-accent outline-none"
+                        onChange={(e) => setFormData({ ...formData, password: e.target.value })}
+                        required
+                    />
+                    <button type="submit" className="w-full py-2 bg-accent rounded font-bold hover:bg-blue-600 transition-colors">
+                        Sign Up
+                    </button>
+                </div>
+                <p className="mt-4 text-sm text-gray-400 text-center">
+                    Already have an account? <Link to="/login" className="text-accent hover:underline">Login</Link>
+                </p>
+            </form>
+        </div>
+    );
+};
+
+export default Signup;
+
+--- File: frontend\src\utils\generateOutput.js ---
+
+export const generateOutput = (html, css, js) => {
+    // We add a hidden timestamp comment so the string is always unique
+    const nonce = ``;
+
+    return `
+    <html>
+      <head>
+        ${nonce}
+        <style>${css}</style>
+      </head>
+      <body>
+        ${html}
+        <script>
+          const originalLog = console.log;
+          console.log = (...args) => {
+            window.parent.postMessage({ type: 'CONSOLE_LOG', payload: args }, '*');
+            originalLog(...args);
+          };
+          
+          try {
+            ${js}
+          } catch (err) {
+            console.log("Error: " + err.message);
+          }
+        </script>
+      </body>
+    </html>
+  `;
+};
+

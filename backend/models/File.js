@@ -19,6 +19,13 @@ const File = sequelize.define('File', {
     type: DataTypes.STRING, // HTML, CSS, or JS
     allowNull: false
   }
+}, {
+  indexes: [
+    {
+      unique: true,
+      fields: ['name', 'RoomId'] // This prevents the duplicate index.html issue
+    }
+  ]
 });
 
 export default File;
