@@ -5,16 +5,18 @@ export const setupSockets = (io) => {
   io.on('connection', (socket) => {
     logger.info(`User connected: ${socket.id}`);
 
-    // 1. Join Room Logic
     socket.on('join-room', ({ roomId, username }) => {
       socket.join(roomId);
       logger.info(`User ${username} joined room: ${roomId}`);
-
-      // Notify others in the room
       socket.to(roomId).emit('user-joined', { username, socketId: socket.id });
     });
 
-    // 2. Chat Message Logic (Requirement: Room-level chat)
+    // Yjs Sync Protocol: Broadcast binary updates to everyone in the room
+    socket.on('yjs-update', ({ roomId, update }) => {
+      // update is a Uint8Array sent as a Buffer
+      socket.to(roomId).emit('yjs-update', update);
+    });
+
     socket.on('send-message', ({ roomId, message, sender }) => {
       io.to(roomId).emit('receive-message', {
         text: message,
@@ -23,12 +25,6 @@ export const setupSockets = (io) => {
       });
     });
 
-    // 3. Code Sync (Simple Version - later we will integrate Yjs)
-    socket.on('code-change', ({ roomId, fileId, content }) => {
-      socket.to(roomId).emit('code-update', { fileId, content });
-    });
-
-    // 4. Cursor Movement (Requirement: See cursor movements)
     socket.on('cursor-move', ({ roomId, username, cursorData }) => {
       socket.to(roomId).emit('cursor-update', { username, cursorData });
     });

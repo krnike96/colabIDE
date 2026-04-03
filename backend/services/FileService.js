@@ -61,9 +61,10 @@ class FileService {
      * Fetches files for a room. If room is empty, creates default starter files.
      */
     async getRoomFiles(roomId) {
+        // 1. Try to fetch existing files
         let files = await FileRepository.getFilesByRoom(roomId);
 
-        // If no files exist (New Room), seed the defaults
+        // 2. If no files, create defaults
         if (files.length === 0) {
             try {
                 const defaults = [
@@ -71,9 +72,11 @@ class FileService {
                     { name: 'style.css', content: 'h1 { color: blue; }', language: 'css', RoomId: roomId },
                     { name: 'script.js', content: 'console.log("Hello Colab!");', language: 'javascript', RoomId: roomId }
                 ];
+                // bulkCreate will now fail if another user beat us to it due to the unique index
                 files = await FileRepository.bulkCreate(defaults);
             } catch (error) {
-                // Handle race condition: if another user created them simultaneously, fetch them
+                // If we hit a unique constraint error, it means someone else just created them.
+                // Just fetch what they created.
                 files = await FileRepository.getFilesByRoom(roomId);
             }
         }

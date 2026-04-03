@@ -42,6 +42,7 @@
     │   └── test-logic.js
     └── frontend
         ├── README.md
+        ├── codebase_smart.txt
         ├── eslint.config.js
         ├── index.html
         ├── package.json
@@ -61,6 +62,7 @@
         │   │   ├── Lobby.jsx
         │   │   ├── Login.jsx
         │   │   └── Signup.jsx
+        │   ├── socket.js
         │   └── utils
         │       └── generateOutput.js
         ├── tailwind.config.js
@@ -113,6 +115,7 @@ DB_URL=postgres://postgres:admin123@localhost:5432/colab_ide_db
     "socket.io": "^4.8.3",
     "socket.io-client": "^4.8.3",
     "y-protocols": "^1.0.7",
+    "y-websocket": "^3.0.0",
     "yjs": "^13.6.30"
   },
   "devDependencies": {
@@ -342,29 +345,16 @@ export default new ExportController();
 --- File: backend\controllers\FileController.js ---
 
 import FileService from '../services/FileService.js';
-import { File } from '../models/index.js';
 
 class FileController {
   async create(req, res) {
     try {
       const { name, language, roomId } = req.body;
-
-      // 1. Validation: Unique name in room
-      const existingFile = await File.findOne({ where: { name, RoomId: roomId } });
-      if (existingFile) {
-        return res.status(400).json({ error: "File name already exists in this room." });
-      }
-
-      // 2. Create the file
-      const file = await File.create({
-        name,
-        language: language.toLowerCase(),
-        content: '',
-        RoomId: roomId
-      });
-
+      // All validation and creation now happens in the Service
+      const file = await FileService.createFile(name, language, roomId);
       res.status(201).json(file);
     } catch (error) {
+      // Service throws specific errors which we catch here
       res.status(400).json({ error: error.message });
     }
   }
@@ -372,17 +362,17 @@ class FileController {
   async delete(req, res) {
     try {
       const { id } = req.params;
-      const deleted = await File.destroy({ where: { id } });
-      if (!deleted) return res.status(404).json({ error: "File not found" });
+      await FileService.removeFile(id);
       res.status(200).json({ message: "Deleted successfully" });
     } catch (error) {
-      res.status(500).json({ error: error.message });
+      res.status(error.message === 'File not found' ? 404 : 500).json({ error: error.message });
     }
   }
 
   async getFiles(req, res) {
     try {
-      const files = await FileService.getRoomFiles(req.params.roomId);
+      const { roomId } = req.params;
+      const files = await FileService.getRoomFiles(roomId);
       res.status(200).json(files);
     } catch (error) {
       res.status(400).json({ error: error.message });
@@ -394,79 +384,22 @@ export default new FileController();
 
 --- File: backend\controllers\ProjectController.js ---
 
-import { Room, File } from '../models/index.js';
+import FileService from '../services/FileService.js';
+import RoomRepository from '../repositories/RoomRepository.js';
 
 class ProjectController {
     /**
-     * Fetches project content (HTML, CSS, JS) from a specific room
+     * Fetches all files for a room. If none exist, Service creates defaults.
      */
-    async getProject(req, res) {
-        try {
-            const { id } = req.params;
-            const room = await Room.findByPk(id);
-
-            if (!room) {
-                return res.status(404).json({ error: "Room not found" });
-            }
-
-            // Return the code stored in the room model
-            res.json({
-                html: room.htmlContent || "",
-                css: room.cssContent || "",
-                js: room.jsContent || ""
-            });
-        } catch (error) {
-            res.status(500).json({ error: error.message });
-        }
-    }
-
-    /**
-     * Updates and persists project content to the database
-     */
-    async updateProject(req, res) {
-        try {
-            const { id } = req.params;
-            const { html, css, js } = req.body;
-
-            const room = await Room.findByPk(id);
-            if (!room) {
-                return res.status(404).json({ error: "Room not found" });
-            }
-
-            // Update the content columns in the Room table
-            room.htmlContent = html;
-            room.cssContent = css;
-            room.jsContent = js;
-            await room.save();
-
-            res.json({ message: "Project saved successfully", room });
-        } catch (error) {
-            res.status(500).json({ error: error.message });
-        }
-    }
-
     async getProjectFiles(req, res) {
         try {
             const { id: roomId } = req.params;
 
-            // 1. Try to find files
-            let files = await File.findAll({ where: { RoomId: roomId } });
+            // Ensure room exists first
+            const room = await RoomRepository.findById(roomId);
+            if (!room) return res.status(404).json({ error: "Room not found" });
 
-            // 2. If no files, try to create them
-            if (files.length === 0) {
-                try {
-                    files = await File.bulkCreate([
-                        { name: 'index.html', content: '<h1>New Project</h1>', language: 'html', RoomId: roomId },
-                        { name: 'style.css', content: '', language: 'css', RoomId: roomId },
-                        { name: 'script.js', content: 'console.log("Hello World");', language: 'javascript', RoomId: roomId }
-                    ]);
-                } catch (createError) {
-                    // If another request created them at the exact same time, 
-                    // just fetch them again.
-                    files = await File.findAll({ where: { RoomId: roomId } });
-                }
-            }
-
+            const files = await FileService.getRoomFiles(roomId);
             res.json(files);
         } catch (error) {
             res.status(500).json({ error: error.message });
@@ -474,56 +407,41 @@ class ProjectController {
     }
 
     /**
-     * Saves the content of a specific file.
+     * Saves the content of a specific file via FileService
      */
     async saveFileContent(req, res) {
         try {
             const { fileId } = req.params;
             const { content } = req.body;
 
-            const file = await File.findByPk(fileId);
-            if (!file) return res.status(404).json({ error: "File not found" });
-
-            file.content = content;
-            await file.save();
-
+            const file = await FileService.updateFileContent(fileId, content);
             res.json({ message: "File saved successfully", file });
         } catch (error) {
-            res.status(500).json({ error: error.message });
+            const status = error.message === 'File not found' ? 404 : 500;
+            res.status(status).json({ error: error.message });
         }
     }
 
     /**
-     * Renames a file with a check for duplicates within the same room.
+     * Renames a file via FileService (which handles uniqueness checks)
      */
     async renameFile(req, res) {
         try {
             const { fileId } = req.params;
             const { name } = req.body;
 
-            const file = await File.findByPk(fileId);
-            if (!file) return res.status(404).json({ error: "File not found" });
-
-            // Unique Name Check: Check if another file in the same room has this name
-            const duplicate = await File.findOne({
-                where: { name, RoomId: file.RoomId }
-            });
-
-            if (duplicate && duplicate.id !== fileId) {
-                return res.status(400).json({ error: "A file with this name already exists in this room." });
-            }
-
-            file.name = name;
-            await file.save();
-
+            const file = await FileService.renameFile(fileId, name);
             res.json({ message: "Renamed successfully", file });
         } catch (error) {
-            res.status(500).json({ error: error.message });
+            const status = error.message.includes('exists') ? 400 : 500;
+            res.status(status).json({ error: error.message });
         }
     }
+
+    // Note: getProject and updateProject methods that used htmlContent/cssContent 
+    // columns in the Room table are removed as we now use the File-based system.
 }
 
-// Export a new instance to match the pattern used in AuthController and RoomController
 export default new ProjectController();
 
 --- File: backend\controllers\RoomController.js ---
@@ -590,24 +508,26 @@ const File = sequelize.define('File', {
   id: {
     type: DataTypes.UUID,
     defaultValue: DataTypes.UUIDV4,
-    primaryKey: true
+    primaryKey: true,
   },
   name: {
     type: DataTypes.STRING,
-    allowNull: false
+    allowNull: false,
   },
   content: {
     type: DataTypes.TEXT,
-    defaultValue: ''
+    defaultValue: '',
   },
   language: {
-    type: DataTypes.STRING, // HTML, CSS, or JS
-    allowNull: false
+    type: DataTypes.STRING,
+    allowNull: false,
   },
+}, {
+  // THIS IS THE FIX: A unique index across name AND RoomId
   indexes: [
     {
       unique: true,
-      fields: ['name', 'RoomId'] // This prevents the duplicate index.html issue
+      fields: ['name', 'RoomId']
     }
   ]
 });
@@ -621,17 +541,29 @@ import Room from './Room.js';
 import File from './File.js';
 import Participant from './Participant.js';
 
-// User <-> Room (Many-to-Many via Participant)
+// 1. User <-> Room (Many-to-Many via Participant)
+// Tracks everyone currently in the room
 User.belongsToMany(Room, { through: Participant });
 Room.belongsToMany(User, { through: Participant });
 
-// Participant explicit links (helpful for querying roles later)
+// 2. Room Ownership (One-to-Many)
+// Tracks specifically who OWNS the room
+User.hasMany(Room, { foreignKey: 'adminId' });
+Room.belongsTo(User, { foreignKey: 'adminId', as: 'Owner' });
+
+// 3. Room <-> File (One-to-Many)
+// Tracks all files inside the room
+Room.hasMany(File, {
+    foreignKey: 'RoomId',
+    onDelete: 'CASCADE'
+});
+File.belongsTo(Room, {
+    foreignKey: 'RoomId'
+});
+
+// Participant explicit links for easier querying
 Participant.belongsTo(User);
 Participant.belongsTo(Room);
-
-// Room <-> File (One-to-Many)
-Room.hasMany(File, { onDelete: 'CASCADE' });
-File.belongsTo(Room);
 
 export { User, Room, File, Participant };
 
@@ -668,6 +600,10 @@ const Room = sequelize.define('Room', {
   },
   name: {
     type: DataTypes.STRING,
+    allowNull: false,
+  },
+  adminId: {
+    type: DataTypes.UUID,
     allowNull: false,
   }
 });
@@ -717,16 +653,28 @@ class FileRepository {
     return await File.findAll({ where: { RoomId: roomId } });
   }
 
-  async deleteFile(fileId) {
-    return await File.destroy({ where: { id: fileId } });
-  }
-
   async findById(id) {
     return await File.findByPk(id);
   }
 
-  async deleteFile(id) {
+  async findByNameInRoom(name, roomId) {
+    return await File.findOne({ where: { name, RoomId: roomId } });
+  }
+
+  async delete(id) {
     return await File.destroy({ where: { id } });
+  }
+
+  async update(id, updateData) {
+    const file = await File.findByPk(id);
+    if (file) {
+      return await file.update(updateData);
+    }
+    return null;
+  }
+
+  async bulkCreate(files) {
+    return await File.bulkCreate(files);
   }
 }
 
@@ -951,38 +899,96 @@ export default new ExportService();
 import FileRepository from '../repositories/FileRepository.js';
 
 class FileService {
-  async createFile(name, language, roomId) {
-    // Validates supported languages (Phase 1) [cite: 6]
-    const supportedLanguages = ['html', 'css', 'javascript'];
-    if (!supportedLanguages.includes(language.toLowerCase())) {
-      throw new Error('Unsupported language');
+    /**
+     * Creates a new file with uniqueness validation and language check.
+     */
+    async createFile(name, language, roomId) {
+        // 1. Language Validation
+        const lang = language.toLowerCase();
+        const supportedLanguages = ['html', 'css', 'javascript'];
+        if (!supportedLanguages.includes(lang)) {
+            throw new Error('Unsupported language. Please use html, css, or javascript.');
+        }
+
+        // 2. Uniqueness Validation (Ensures no duplicate name in the same room)
+        const existingFile = await FileRepository.findByNameInRoom(name, roomId);
+        if (existingFile) {
+            throw new Error('A file with this name already exists in this room.');
+        }
+
+        return await FileRepository.createFile({
+            name,
+            language: lang,
+            content: '',
+            RoomId: roomId
+        });
     }
 
-    return await FileRepository.createFile({
-      name,
-      language,
-      RoomId: roomId
-    });
-  }
+    /**
+     * Updates file content (Called by Save button and eventually WebSockets).
+     */
+    async updateFileContent(fileId, content) {
+        const file = await FileRepository.findById(fileId);
+        if (!file) throw new Error('File not found');
 
-  async updateContent(fileId, content) {
-    // This will be called by our WebSocket sync later
-    const file = await FileRepository.findById(fileId);
-    if (!file) throw new Error('File not found');
+        file.content = content;
+        return await file.save();
+    }
 
-    file.content = content;
-    return await file.save();
-  }
+    /**
+     * Renames a file with a check to ensure the new name isn't taken in that room.
+     */
+    async renameFile(fileId, newName) {
+        const file = await FileRepository.findById(fileId);
+        if (!file) throw new Error('File not found');
 
-  async getRoomFiles(roomId) {
-    return await FileRepository.getFilesByRoom(roomId);
-  }
-  
-  async removeFile(fileId) {
-    const deleted = await FileRepository.deleteFile(fileId);
-    if (!deleted) throw new Error('File not found or already deleted');
-    return { message: 'File deleted successfully' };
-  }
+        // Check if the name is actually changing
+        if (file.name === newName) return file;
+
+        // Check if another file in the same room already has the new name
+        const duplicate = await FileRepository.findByNameInRoom(newName, file.RoomId);
+        if (duplicate) {
+            throw new Error('A file with this name already exists in this room.');
+        }
+
+        file.name = newName;
+        return await file.save();
+    }
+
+    /**
+     * Fetches files for a room. If room is empty, creates default starter files.
+     */
+    async getRoomFiles(roomId) {
+        // 1. Try to fetch existing files
+        let files = await FileRepository.getFilesByRoom(roomId);
+
+        // 2. If no files, create defaults
+        if (files.length === 0) {
+            try {
+                const defaults = [
+                    { name: 'index.html', content: '<h1>New Project</h1>', language: 'html', RoomId: roomId },
+                    { name: 'style.css', content: 'h1 { color: blue; }', language: 'css', RoomId: roomId },
+                    { name: 'script.js', content: 'console.log("Hello Colab!");', language: 'javascript', RoomId: roomId }
+                ];
+                // bulkCreate will now fail if another user beat us to it due to the unique index
+                files = await FileRepository.bulkCreate(defaults);
+            } catch (error) {
+                // If we hit a unique constraint error, it means someone else just created them.
+                // Just fetch what they created.
+                files = await FileRepository.getFilesByRoom(roomId);
+            }
+        }
+        return files;
+    }
+
+    /**
+     * Removes a file from the database.
+     */
+    async removeFile(fileId) {
+        const deleted = await FileRepository.delete(fileId);
+        if (!deleted) throw new Error('File not found');
+        return { message: 'File deleted successfully' };
+    }
 }
 
 export default new FileService();
@@ -993,14 +999,20 @@ import RoomRepository from '../repositories/RoomRepository.js';
 import { Participant } from '../models/index.js';
 
 class RoomService {
-  async createRoom(name, adminUserId) {
-    // 1. Create the Room
-    const room = await RoomRepository.create({ name });
+  async createRoom(name, adminId) {
+    if (!name) throw new Error('Room name is required');
+    if (!adminId) throw new Error('Admin ID is required');
 
-    // 2. Assign the creator as the ADMIN (Single Responsibility)
+    // 1. Create the room with the adminId
+    const room = await RoomRepository.create({
+      name,
+      adminId // This fixes the NotNull violation
+    });
+
+    // 2. Automatically add the creator as an 'ADMIN' participant
     await Participant.create({
-      UserId: adminUserId,
       RoomId: room.id,
+      UserId: adminId,
       role: 'ADMIN'
     });
 
@@ -1038,16 +1050,18 @@ export const setupSockets = (io) => {
   io.on('connection', (socket) => {
     logger.info(`User connected: ${socket.id}`);
 
-    // 1. Join Room Logic
     socket.on('join-room', ({ roomId, username }) => {
       socket.join(roomId);
       logger.info(`User ${username} joined room: ${roomId}`);
-
-      // Notify others in the room
       socket.to(roomId).emit('user-joined', { username, socketId: socket.id });
     });
 
-    // 2. Chat Message Logic (Requirement: Room-level chat)
+    // Yjs Sync Protocol: Broadcast binary updates to everyone in the room
+    socket.on('yjs-update', ({ roomId, update }) => {
+      // update is a Uint8Array sent as a Buffer
+      socket.to(roomId).emit('yjs-update', update);
+    });
+
     socket.on('send-message', ({ roomId, message, sender }) => {
       io.to(roomId).emit('receive-message', {
         text: message,
@@ -1056,12 +1070,6 @@ export const setupSockets = (io) => {
       });
     });
 
-    // 3. Code Sync (Simple Version - later we will integrate Yjs)
-    socket.on('code-change', ({ roomId, fileId, content }) => {
-      socket.to(roomId).emit('code-update', { fileId, content });
-    });
-
-    // 4. Cursor Movement (Requirement: See cursor movements)
     socket.on('cursor-move', ({ roomId, username, cursorData }) => {
       socket.to(roomId).emit('cursor-update', { username, cursorData });
     });
@@ -1071,6 +1079,1040 @@ export const setupSockets = (io) => {
     });
   });
 };
+
+--- File: frontend\codebase_smart.txt ---
+
+=== Directory Structure ===
+└── frontend
+    ├── README.md
+    ├── eslint.config.js
+    ├── index.html
+    ├── package.json
+    ├── postcss.config.js
+    ├── public
+    ├── src
+    │   ├── App.css
+    │   ├── App.jsx
+    │   ├── api.js
+    │   ├── assets
+    │   ├── components
+    │   │   └── MainLayout.jsx
+    │   ├── index.css
+    │   ├── main.jsx
+    │   ├── pages
+    │   │   ├── EditorPage.jsx
+    │   │   ├── Lobby.jsx
+    │   │   ├── Login.jsx
+    │   │   └── Signup.jsx
+    │   ├── socket.js
+    │   └── utils
+    │       └── generateOutput.js
+    ├── tailwind.config.js
+    └── vite.config.js
+
+=== File Contents ===
+
+--- File: eslint.config.js ---
+
+import js from '@eslint/js'
+import globals from 'globals'
+import reactHooks from 'eslint-plugin-react-hooks'
+import reactRefresh from 'eslint-plugin-react-refresh'
+import { defineConfig, globalIgnores } from 'eslint/config'
+
+export default defineConfig([
+  globalIgnores(['dist']),
+  {
+    files: ['**/*.{js,jsx}'],
+    extends: [
+      js.configs.recommended,
+      reactHooks.configs.flat.recommended,
+      reactRefresh.configs.vite,
+    ],
+    languageOptions: {
+      ecmaVersion: 2020,
+      globals: globals.browser,
+      parserOptions: {
+        ecmaVersion: 'latest',
+        ecmaFeatures: { jsx: true },
+        sourceType: 'module',
+      },
+    },
+    rules: {
+      'no-unused-vars': ['error', { varsIgnorePattern: '^[A-Z_]' }],
+    },
+  },
+])
+
+
+--- File: index.html ---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>frontend</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>
+
+
+--- File: package.json ---
+
+{
+  "name": "frontend",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "lint": "eslint .",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@monaco-editor/react": "^4.7.0",
+    "axios": "^1.13.6",
+    "lucide-react": "^0.577.0",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "react-router-dom": "^7.13.1",
+    "socket.io-client": "^4.8.3",
+    "y-monaco": "^0.1.6",
+    "y-protocols": "^1.0.7",
+    "y-socket.io": "^1.1.3",
+    "y-webrtc": "^10.3.0",
+    "y-websocket": "^3.0.0",
+    "yjs": "^13.6.30"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.4",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.0",
+    "autoprefixer": "^10.4.27",
+    "eslint": "^9.39.4",
+    "eslint-plugin-react-hooks": "^7.0.1",
+    "eslint-plugin-react-refresh": "^0.5.2",
+    "globals": "^17.4.0",
+    "postcss": "^8.5.8",
+    "tailwindcss": "3.4",
+    "vite": "^8.0.0"
+  }
+}
+
+
+--- File: postcss.config.js ---
+
+export default {
+  plugins: {
+    tailwindcss: {},
+    autoprefixer: {},
+  },
+}
+
+
+--- File: README.md ---
+
+# React + Vite
+
+This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+
+Currently, two official plugins are available:
+
+- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
+- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+
+## React Compiler
+
+The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+
+## Expanding the ESLint configuration
+
+If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+
+
+--- File: tailwind.config.js ---
+
+/** @type {import('tailwindcss').Config} */
+export default {
+  content: [
+    "./index.html",
+    "./src/**/*.{js,ts,jsx,tsx}",
+  ],
+  theme: {
+    extend: {
+      colors: {
+        // "IDE Dark" theme colors
+        editor: '#1e1e1e',
+        sidebar: '#252526',
+        activity: '#333333',
+        accent: '#007acc'
+      }
+    },
+  },
+  plugins: [],
+}
+
+--- File: vite.config.js ---
+
+import { defineConfig } from 'vite'
+import react from '@vitejs/plugin-react'
+
+// https://vite.dev/config/
+export default defineConfig({
+  plugins: [react()],
+})
+
+
+--- File: src\api.js ---
+
+import axios from 'axios';
+
+// Create a central axios instance with your backend base URL
+const api = axios.create({
+    baseURL: 'http://localhost:5000/api',
+});
+
+// Interceptor to attach the JWT token to every request automatically
+api.interceptors.request.use((config) => {
+    const token = localStorage.getItem('token');
+    if (token) {
+        config.headers.Authorization = `Bearer ${token}`;
+    }
+    return config;
+});
+
+export default api;
+
+--- File: src\App.css ---
+
+.counter {
+  font-size: 16px;
+  padding: 5px 10px;
+  border-radius: 5px;
+  color: var(--accent);
+  background: var(--accent-bg);
+  border: 2px solid transparent;
+  transition: border-color 0.3s;
+  margin-bottom: 24px;
+
+  &:hover {
+    border-color: var(--accent-border);
+  }
+  &:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+}
+
+.hero {
+  position: relative;
+
+  .base,
+  .framework,
+  .vite {
+    inset-inline: 0;
+    margin: 0 auto;
+  }
+
+  .base {
+    width: 170px;
+    position: relative;
+    z-index: 0;
+  }
+
+  .framework,
+  .vite {
+    position: absolute;
+  }
+
+  .framework {
+    z-index: 1;
+    top: 34px;
+    height: 28px;
+    transform: perspective(2000px) rotateZ(300deg) rotateX(44deg) rotateY(39deg)
+      scale(1.4);
+  }
+
+  .vite {
+    z-index: 0;
+    top: 107px;
+    height: 26px;
+    width: auto;
+    transform: perspective(2000px) rotateZ(300deg) rotateX(40deg) rotateY(39deg)
+      scale(0.8);
+  }
+}
+
+#center {
+  display: flex;
+  flex-direction: column;
+  gap: 25px;
+  place-content: center;
+  place-items: center;
+  flex-grow: 1;
+
+  @media (max-width: 1024px) {
+    padding: 32px 20px 24px;
+    gap: 18px;
+  }
+}
+
+#next-steps {
+  display: flex;
+  border-top: 1px solid var(--border);
+  text-align: left;
+
+  & > div {
+    flex: 1 1 0;
+    padding: 32px;
+    @media (max-width: 1024px) {
+      padding: 24px 20px;
+    }
+  }
+
+  .icon {
+    margin-bottom: 16px;
+    width: 22px;
+    height: 22px;
+  }
+
+  @media (max-width: 1024px) {
+    flex-direction: column;
+    text-align: center;
+  }
+}
+
+#docs {
+  border-right: 1px solid var(--border);
+
+  @media (max-width: 1024px) {
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+  }
+}
+
+#next-steps ul {
+  list-style: none;
+  padding: 0;
+  display: flex;
+  gap: 8px;
+  margin: 32px 0 0;
+
+  .logo {
+    height: 18px;
+  }
+
+  a {
+    color: var(--text-h);
+    font-size: 16px;
+    border-radius: 6px;
+    background: var(--social-bg);
+    display: flex;
+    padding: 6px 12px;
+    align-items: center;
+    gap: 8px;
+    text-decoration: none;
+    transition: box-shadow 0.3s;
+
+    &:hover {
+      box-shadow: var(--shadow);
+    }
+    .button-icon {
+      height: 18px;
+      width: 18px;
+    }
+  }
+
+  @media (max-width: 1024px) {
+    margin-top: 20px;
+    flex-wrap: wrap;
+    justify-content: center;
+
+    li {
+      flex: 1 1 calc(50% - 8px);
+    }
+
+    a {
+      width: 100%;
+      justify-content: center;
+      box-sizing: border-box;
+    }
+  }
+}
+
+#spacer {
+  height: 88px;
+  border-top: 1px solid var(--border);
+  @media (max-width: 1024px) {
+    height: 48px;
+  }
+}
+
+.ticks {
+  position: relative;
+  width: 100%;
+
+  &::before,
+  &::after {
+    content: '';
+    position: absolute;
+    top: -4.5px;
+    border: 5px solid transparent;
+  }
+
+  &::before {
+    left: 0;
+    border-left-color: var(--border);
+  }
+  &::after {
+    right: 0;
+    border-right-color: var(--border);
+  }
+}
+
+
+--- File: src\App.jsx ---
+
+import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
+import Login from './pages/Login';
+import Signup from './pages/Signup';
+import Lobby from './pages/Lobby';
+import EditorPage from './pages/EditorPage';
+
+function App() {
+  return (
+    <Router>
+      <Routes>
+        <Route path="/login" element={<Login />} />
+        <Route path="/signup" element={<Signup />} />
+        <Route path="/lobby" element={<Lobby />} />
+        {/* We will protect this route later */}
+        <Route path="/editor/:roomId" element={<EditorPage />} />
+        <Route path="/" element={<Navigate to="/login" />} />
+      </Routes>
+    </Router>
+  );
+}
+
+export default App;
+
+--- File: src\index.css ---
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  /* Prevents double scrollbars in IDE */
+  background-color: #1e1e1e;
+  color: white;
+}
+
+--- File: src\main.jsx ---
+
+import { StrictMode } from 'react'
+import { createRoot } from 'react-dom/client'
+import './index.css'
+import App from './App.jsx'
+
+createRoot(document.getElementById('root')).render(
+  <StrictMode>
+    <App />
+  </StrictMode>,
+)
+
+
+--- File: src\socket.js ---
+
+import { io } from 'socket.io-client';
+
+const URL = 'http://localhost:5000'; // backend URL
+
+export const socket = io(URL, {
+    autoConnect: false, // We will connect manually when the user enters a room
+});
+
+--- File: src\components\MainLayout.jsx ---
+
+import React, { useState } from 'react';
+import { Files, MessageSquare, Users, Settings } from 'lucide-react';
+
+const MainLayout = ({ children, sidebarContent }) => {
+    const [activeTab, setActiveTab] = useState('files');
+
+    return (
+        <div className="flex h-screen w-screen bg-editor text-gray-300 font-sans">
+            {/* 1. Activity Bar (Slim Left) */}
+            <div className="w-12 bg-activity flex flex-col items-center py-4 space-y-6 border-r border-white/10">
+                <Files 
+                    className={`cursor-pointer ${activeTab === 'files' ? 'text-white' : 'text-gray-500'}`} 
+                    onClick={() => setActiveTab('files')} 
+                />
+                <MessageSquare 
+                    className={`cursor-pointer ${activeTab === 'chat' ? 'text-white' : 'text-gray-500'}`} 
+                    onClick={() => setActiveTab('chat')} 
+                />
+                <Users className="text-gray-500 cursor-pointer" />
+                <div className="flex-grow"></div>
+                <Settings className="text-gray-500 cursor-pointer mb-2" />
+            </div>
+
+            {/* 2. Side Pane (Now receives content from EditorPage) */}
+            <div className="w-64 bg-sidebar border-r border-white/10 flex flex-col">
+                <div className="p-3 uppercase text-xs font-bold tracking-widest text-gray-500 border-b border-white/5">
+                    {activeTab}
+                </div>
+                <div className="flex-grow">
+                    {activeTab === 'files' ? sidebarContent : (
+                        <div className="p-4 text-sm text-gray-500">Chat coming soon...</div>
+                    )}
+                </div>
+            </div>
+
+            {/* 3. Main Editor Area */}
+            <div className="flex-grow flex flex-col overflow-hidden">
+                {children}
+            </div>
+        </div>
+    );
+};
+
+export default MainLayout;
+
+--- File: src\pages\EditorPage.jsx ---
+
+import React, { useState, useEffect, useRef } from 'react';
+import { useParams } from 'react-router-dom';
+import MainLayout from '../components/MainLayout';
+import Editor from '@monaco-editor/react';
+import { Save, Play, Code2, FileJson, Hash, Layout, Plus, Trash2, Edit3 } from 'lucide-react';
+import { generateOutput } from '../utils/generateOutput';
+import api from '../api';
+import { socket } from '../socket';
+import * as Y from 'yjs';
+import { MonacoBinding } from 'y-monaco';
+
+const EditorPage = () => {
+    const [files, setFiles] = useState([]);
+    const [activeFileId, setActiveFileId] = useState(null);
+    const [srcDoc, setSrcDoc] = useState('');
+    const [logs, setLogs] = useState([]);
+    const [showPreview, setShowPreview] = useState(true);
+    const [executionKey, setExecutionKey] = useState(0);
+    const { roomId } = useParams();
+
+    const [menuPos, setMenuPos] = useState(null);
+    const [selectedFileId, setSelectedFileId] = useState(null);
+
+    // Refs for Yjs and Monaco
+    const editorRef = useRef(null);
+    const bindingRef = useRef(null);
+    const yDocRef = useRef(new Y.Doc());
+
+    const activeFile = files.find(f => f.id === activeFileId);
+
+    // --- 1. SOCKET & YJS SYNC LOGIC ---
+    useEffect(() => {
+        socket.connect();
+
+        // 1. Receiving updates from others
+        socket.on('yjs-update', (update) => {
+            // CRITICAL: Convert the incoming Buffer back to Uint8Array
+            const uint8Update = new Uint8Array(update);
+            Y.applyUpdate(yDocRef.current, uint8Update, 'remote'); // The 'remote' origin is important
+        });
+
+        // 2. Sending local updates to others
+        const handleUpdate = (update, origin) => {
+            // Only send if the change happened LOCALLY (not from another socket message)
+            if (origin !== 'remote') {
+                socket.emit('yjs-update', { roomId, update });
+            }
+        };
+
+        yDocRef.current.on('update', handleUpdate);
+
+        return () => {
+            socket.off('yjs-update');
+            yDocRef.current.off('update', handleUpdate);
+            socket.disconnect();
+        };
+    }, [roomId]);
+
+    // --- 2. MONACO & YJS BINDING ---
+    const handleEditorDidMount = (editor) => {
+        editorRef.current = editor;
+    };
+
+    useEffect(() => {
+        if (!editorRef.current || !activeFileId) return;
+
+        // Clean up previous binding if it exists
+        if (bindingRef.current) {
+            bindingRef.current.destroy();
+        }
+
+        // Create/Get a Y.Text for this specific file ID
+        const yText = yDocRef.current.getText(activeFileId);
+
+        // If Yjs is empty but DB has content, seed Yjs (only happens once per file session)
+        if (yText.toString() === '' && activeFile?.content) {
+            yText.insert(0, activeFile.content);
+        }
+
+        // Bind Monaco to the Y.Text doc
+        bindingRef.current = new MonacoBinding(
+            yText,
+            editorRef.current.getModel(),
+            new Set([editorRef.current])
+        );
+
+    }, [activeFileId]); // Re-bind only when the file changes
+
+
+    // --- 3. EXISTING PROJECT LOGIC (PRESERVED) ---
+    const fetchProject = async () => {
+        try {
+            const { data } = await api.get(`/projects/room/${roomId}`);
+            setFiles(data);
+            if (data.length > 0 && !activeFileId) {
+                setActiveFileId(data[0].id);
+            }
+        } catch (err) {
+            console.error("Failed to load project files", err);
+        }
+    };
+
+    useEffect(() => {
+        fetchProject();
+    }, [roomId]);
+
+    useEffect(() => {
+        const handleMessage = (event) => {
+            if (event.data.type === 'CONSOLE_LOG') {
+                setLogs(prev => [...prev, event.data.payload.join(' ')]);
+            }
+        };
+        window.addEventListener('message', handleMessage);
+        return () => window.removeEventListener('message', handleMessage);
+    }, []);
+
+    const createFile = async () => {
+        const fileName = prompt("Enter file name:");
+        if (!fileName) return;
+        if (files.some(f => f.name.toLowerCase() === fileName.toLowerCase())) {
+            alert("A file with this name already exists!");
+            return;
+        }
+        const extension = fileName.split('.').pop();
+        const langMap = { js: 'javascript', html: 'html', css: 'css' };
+
+        try {
+            const { data } = await api.post('/files', {
+                name: fileName,
+                content: '',
+                language: langMap[extension] || 'javascript',
+                roomId: roomId
+            });
+            setFiles(prev => [...prev, data]);
+            setActiveFileId(data.id);
+        } catch (err) {
+            alert(err.response?.data?.error || "Error creating file");
+        }
+    };
+
+    const saveProject = async () => {
+        if (!activeFileId || !activeFile) return;
+        try {
+            // Important: Get the latest content from the Yjs Doc instead of local state
+            const currentContent = yDocRef.current.getText(activeFileId).toString();
+            await api.put(`/projects/file/${activeFileId}`, { content: currentContent });
+
+            // Sync local state to reflect the save
+            setFiles(prev => prev.map(f => f.id === activeFileId ? { ...f, content: currentContent } : f));
+            alert("Saved!");
+        } catch (err) {
+            alert("Save failed");
+        }
+    };
+
+    const deleteFile = async (id) => {
+        if (!window.confirm("Delete this file?")) return;
+        try {
+            await api.delete(`/files/${id}`);
+            const updated = files.filter(f => f.id !== id);
+            setFiles(updated);
+            if (activeFileId === id) setActiveFileId(updated[0]?.id || null);
+        } catch (err) { alert("Delete failed"); }
+    };
+
+    const renameFile = async (id, currentName) => {
+        const newName = prompt("New name:", currentName);
+        if (!newName || newName === currentName) return;
+        try {
+            await api.patch(`/projects/file/${id}/rename`, { name: newName });
+            setFiles(prev => prev.map(f => f.id === id ? { ...f, name: newName } : f));
+        } catch (err) {
+            alert(err.response?.data?.error || "Rename failed");
+        }
+    };
+
+    const runCode = () => {
+        setLogs([]);
+        // Fetch values directly from Yjs for the most up-to-date preview
+        const getFileContent = (ext) => {
+            const f = files.find(file => file.name.toLowerCase().endsWith(ext));
+            return f ? yDocRef.current.getText(f.id).toString() : '';
+        };
+
+        const html = getFileContent('.html');
+        const css = getFileContent('.css');
+        const js = getFileContent('.js');
+
+        setSrcDoc(generateOutput(html, css, js));
+        setExecutionKey(prev => prev + 1);
+    };
+
+    const handleContextMenu = (e, fileId) => {
+        e.preventDefault();
+        setMenuPos({ x: e.pageX, y: e.pageY });
+        setSelectedFileId(fileId);
+    };
+
+    const getFileIcon = (name) => {
+        if (name.endsWith('.html')) return <Code2 size={14} className="text-orange-500" />;
+        if (name.endsWith('.css')) return <Hash size={14} className="text-blue-400" />;
+        if (name.endsWith('.js')) return <FileJson size={14} className="text-yellow-400" />;
+        return <Plus size={14} className="text-gray-400" />;
+    };
+
+    const sidebarContent = (
+        <div className="flex flex-col h-full" onClick={() => setMenuPos(null)}>
+            <div className="p-3 border-b border-white/5 flex items-center justify-between">
+                <span className="text-[10px] text-gray-500 font-bold uppercase tracking-widest">Explorer</span>
+                <button onClick={createFile} className="p-1 hover:bg-white/10 rounded text-gray-400"><Plus size={14} /></button>
+            </div>
+            <div className="flex-grow overflow-y-auto">
+                {files.map(file => (
+                    <div
+                        key={file.id}
+                        onContextMenu={(e) => handleContextMenu(e, file.id)}
+                        onClick={() => setActiveFileId(file.id)}
+                        className={`px-4 py-1.5 text-sm cursor-pointer flex items-center gap-2 ${activeFileId === file.id ? 'bg-accent/20 text-white' : 'hover:bg-white/5 text-gray-400'}`}
+                    >
+                        {getFileIcon(file.name)} {file.name}
+                    </div>
+                ))}
+            </div>
+            {menuPos && (
+                <div className="fixed bg-[#1e1e1e] border border-white/10 shadow-2xl rounded py-1 z-50 w-40" style={{ top: menuPos.y, left: menuPos.x }}>
+                    <button onClick={() => renameFile(selectedFileId, files.find(f => f.id === selectedFileId)?.name)} className="w-full text-left px-3 py-2 text-xs text-gray-300 hover:bg-accent hover:text-white flex items-center gap-2"><Edit3 size={12} /> Rename</button>
+                    <button onClick={() => deleteFile(selectedFileId)} className="w-full text-left px-3 py-2 text-xs text-red-400 hover:bg-red-500 hover:text-white flex items-center gap-2"><Trash2 size={12} /> Delete</button>
+                </div>
+            )}
+        </div>
+    );
+
+    return (
+        <MainLayout sidebarContent={sidebarContent}>
+            <div className="flex flex-col h-full" onClick={() => setMenuPos(null)}>
+                <div className="flex bg-[#1e1e1e] border-b border-white/10 items-center px-2">
+                    <div className="flex overflow-x-auto flex-grow no-scrollbar">
+                        {files.map(file => (
+                            <button key={file.id} onClick={() => setActiveFileId(file.id)} className={`px-4 py-2 text-xs border-r border-white/5 whitespace-nowrap ${activeFileId === file.id ? 'bg-[#1e1e1e] text-white border-t-2 border-t-accent' : 'text-gray-500'}`}>
+                                {file.name}
+                            </button>
+                        ))}
+                    </div>
+                    <div className="flex gap-1 ml-2">
+                        <button onClick={saveProject} className="p-2 text-accent hover:text-white"><Save size={16} /></button>
+                        <button onClick={runCode} className="p-2 text-green-500 hover:text-white"><Play size={16} /></button>
+                        <button onClick={() => setShowPreview(!showPreview)} className="p-2 text-gray-400 hover:text-white"><Layout size={16} /></button>
+                    </div>
+                </div>
+                <div className="flex flex-grow overflow-hidden">
+                    <div className={`${showPreview ? 'w-1/2' : 'w-full'} h-full border-r border-white/10`}>
+                        {activeFile ? (
+                            <Editor
+                                height="100%"
+                                theme="vs-dark"
+                                language={activeFile.language}
+                                onMount={handleEditorDidMount}
+                                options={{
+                                    automaticLayout: true,
+                                    fontSize: 14,
+                                }}
+                            />
+                        ) : <div className="p-10 text-gray-600 italic">Select a file...</div>}
+                    </div>
+                    {showPreview && (
+                        <div className="w-1/2 h-full flex flex-col bg-white">
+                            <iframe key={executionKey} srcDoc={srcDoc} className="flex-grow w-full border-none" sandbox="allow-scripts" title="preview" />
+                            <div className="h-40 bg-[#1e1e1e] border-t border-white/10 p-2 font-mono text-[10px] overflow-y-auto">
+                                <div className="text-gray-500 mb-1 border-b border-white/5 pb-1 flex justify-between uppercase"><span>Console</span><button onClick={() => setLogs([])}>Clear</button></div>
+                                {logs.map((log, i) => <div key={i} className="text-green-400 py-0.5 border-b border-white/5 last:border-none">{`> ${log}`}</div>)}
+                            </div>
+                        </div>
+                    )}
+                </div>
+            </div>
+        </MainLayout>
+    );
+};
+
+export default EditorPage;
+
+--- File: src\pages\Lobby.jsx ---
+
+import React, { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import api from '../api';
+
+const Lobby = () => {
+    const [roomName, setRoomName] = useState('');
+    const [isLoading, setIsLoading] = useState(false);
+    const navigate = useNavigate();
+
+    const handleCreateRoom = async (e) => {
+        e.preventDefault();
+        setIsLoading(true);
+        try {
+            // Hits your backend RoomController.create endpoint
+            // This endpoint creates the room and returns the room object with its ID
+            const { data } = await api.post('/rooms', { name: roomName });
+
+            // Redirect to the editor with the new unique room ID
+            navigate(`/editor/${data.id}`);
+        } catch (err) {
+            console.error(err);
+            alert(err.response?.data?.error || "Error creating room. Please try again.");
+        } finally {
+            setIsLoading(false);
+        }
+    };
+
+    return (
+        <div className="h-screen w-full bg-editor flex items-center justify-center text-white p-4">
+            <div className="bg-sidebar p-8 rounded-lg border border-white/10 w-full max-w-md shadow-2xl">
+                <div className="text-center mb-8">
+                    <h1 className="text-3xl font-bold text-white mb-2">Create a Workspace</h1>
+                    <p className="text-gray-400 text-sm">Give your room a name to start coding together</p>
+                </div>
+
+                <form onSubmit={handleCreateRoom} className="space-y-6">
+                    <div>
+                        <label className="block text-xs uppercase tracking-widest text-gray-500 font-bold mb-2">
+                            Room Name
+                        </label>
+                        <input
+                            type="text"
+                            placeholder="e.g. Portfolio Project, Bug Fix Session..."
+                            className="w-full p-3 bg-editor border border-white/10 rounded focus:border-accent outline-none transition-all"
+                            value={roomName}
+                            onChange={(e) => setRoomName(e.target.value)}
+                            required
+                        />
+                    </div>
+
+                    <button
+                        type="submit"
+                        disabled={isLoading}
+                        className={`w-full py-3 rounded font-bold transition-all flex items-center justify-center gap-2 ${isLoading
+                                ? 'bg-gray-600 cursor-not-allowed'
+                                : 'bg-accent hover:bg-blue-600 active:scale-95 text-white'
+                            }`}
+                    >
+                        {isLoading ? 'Creating Room...' : 'Start Coding'}
+                    </button>
+                </form>
+
+                <div className="mt-8 pt-6 border-t border-white/5">
+                    <p className="text-center text-xs text-gray-500 italic">
+                        Once created, you can invite others by sharing the URL.
+                    </p>
+                </div>
+            </div>
+        </div>
+    );
+};
+
+export default Lobby;
+
+--- File: src\pages\Login.jsx ---
+
+import React, { useState } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
+import api from '../api';
+
+const Login = () => {
+    const [email, setEmail] = useState('');
+    const [password, setPassword] = useState('');
+    const navigate = useNavigate();
+
+    const handleLogin = async (e) => {
+        e.preventDefault();
+        try {
+            // Send login request to your backend API
+            const { data } = await api.post('/auth/login', { email, password });
+
+            // Store the JWT and user info for persistence
+            localStorage.setItem('token', data.token);
+            localStorage.setItem('user', JSON.stringify(data.user));
+
+            // Redirect to the lobby instead of a hardcoded room
+            navigate('/lobby');
+        } catch (error) {
+            alert(error.response?.data?.error || "Login failed. Please check your credentials.");
+        }
+    };
+
+    return (
+        <div className="h-screen flex items-center justify-center bg-editor text-white">
+            <form onSubmit={handleLogin} className="bg-sidebar p-8 rounded-lg border border-white/10 w-96">
+                <h2 className="text-2xl font-bold mb-6 text-center">Welcome Back</h2>
+                <div className="space-y-4">
+                    <input
+                        type="email"
+                        placeholder="Email"
+                        className="w-full p-2 bg-editor border border-white/10 rounded focus:border-accent outline-none"
+                        value={email}
+                        onChange={(e) => setEmail(e.target.value)}
+                        required
+                    />
+                    <input
+                        type="password"
+                        placeholder="Password"
+                        className="w-full p-2 bg-editor border border-white/10 rounded focus:border-accent outline-none"
+                        value={password}
+                        onChange={(e) => setPassword(e.target.value)}
+                        required
+                    />
+                    <button type="submit" className="w-full py-2 bg-accent rounded font-bold hover:bg-blue-600 transition-colors">
+                        Login
+                    </button>
+                </div>
+                <p className="mt-4 text-sm text-gray-400 text-center">
+                    Don't have an account? <Link to="/signup" className="text-accent hover:underline">Sign up</Link>
+                </p>
+            </form>
+        </div>
+    );
+};
+
+export default Login;
+
+--- File: src\pages\Signup.jsx ---
+
+import React, { useState } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
+import api from '../api';
+
+const Signup = () => {
+    const [formData, setFormData] = useState({
+        username: '',
+        email: '',
+        password: ''
+    });
+    const navigate = useNavigate();
+
+    const handleSignup = async (e) => {
+        e.preventDefault();
+        try {
+            // Post registration data to backend
+            await api.post('/auth/register', formData);
+            alert("Account created successfully! Please login.");
+            navigate('/login');
+        } catch (error) {
+            alert(error.response?.data?.error || "Signup failed");
+        }
+    };
+
+    return (
+        <div className="h-screen flex items-center justify-center bg-editor text-white">
+            <form onSubmit={handleSignup} className="bg-sidebar p-8 rounded-lg border border-white/10 w-96">
+                <h2 className="text-2xl font-bold mb-6 text-center">Create Account</h2>
+                <div className="space-y-4">
+                    <input
+                        type="text"
+                        placeholder="Username"
+                        className="w-full p-2 bg-editor border border-white/10 rounded focus:border-accent outline-none"
+                        onChange={(e) => setFormData({ ...formData, username: e.target.value })}
+                        required
+                    />
+                    <input
+                        type="email"
+                        placeholder="Email Address"
+                        className="w-full p-2 bg-editor border border-white/10 rounded focus:border-accent outline-none"
+                        onChange={(e) => setFormData({ ...formData, email: e.target.value })}
+                        required
+                    />
+                    <input
+                        type="password"
+                        placeholder="Password"
+                        className="w-full p-2 bg-editor border border-white/10 rounded focus:border-accent outline-none"
+                        onChange={(e) => setFormData({ ...formData, password: e.target.value })}
+                        required
+                    />
+                    <button type="submit" className="w-full py-2 bg-accent rounded font-bold hover:bg-blue-600 transition-colors">
+                        Sign Up
+                    </button>
+                </div>
+                <p className="mt-4 text-sm text-gray-400 text-center">
+                    Already have an account? <Link to="/login" className="text-accent hover:underline">Login</Link>
+                </p>
+            </form>
+        </div>
+    );
+};
+
+export default Signup;
+
+--- File: src\utils\generateOutput.js ---
+
+export const generateOutput = (html, css, js) => {
+    // We add a hidden timestamp comment so the string is always unique
+    const nonce = ``;
+
+    return `
+    <html>
+      <head>
+        ${nonce}
+        <style>${css}</style>
+      </head>
+      <body>
+        ${html}
+        <script>
+          const originalLog = console.log;
+          console.log = (...args) => {
+            window.parent.postMessage({ type: 'CONSOLE_LOG', payload: args }, '*');
+            originalLog(...args);
+          };
+          
+          try {
+            ${js}
+          } catch (err) {
+            console.log("Error: " + err.message);
+          }
+        </script>
+      </body>
+    </html>
+  `;
+};
+
+
 
 --- File: frontend\eslint.config.js ---
 
@@ -1143,9 +2185,11 @@ export default defineConfig([
     "react-dom": "^19.2.4",
     "react-router-dom": "^7.13.1",
     "socket.io-client": "^4.8.3",
+    "y-monaco": "^0.1.6",
     "y-protocols": "^1.0.7",
     "y-socket.io": "^1.1.3",
     "y-webrtc": "^10.3.0",
+    "y-websocket": "^3.0.0",
     "yjs": "^13.6.30"
   },
   "devDependencies": {
@@ -1493,6 +2537,16 @@ createRoot(document.getElementById('root')).render(
 )
 
 
+--- File: frontend\src\socket.js ---
+
+import { io } from 'socket.io-client';
+
+const URL = 'http://localhost:5000'; // backend URL
+
+export const socket = io(URL, {
+    autoConnect: false, // We will connect manually when the user enters a room
+});
+
 --- File: frontend\src\components\MainLayout.jsx ---
 
 import React, { useState } from 'react';
@@ -1542,13 +2596,16 @@ export default MainLayout;
 
 --- File: frontend\src\pages\EditorPage.jsx ---
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useParams } from 'react-router-dom';
 import MainLayout from '../components/MainLayout';
 import Editor from '@monaco-editor/react';
-import { Save, Play, Code2, FileJson, Hash, Layout, Plus, Trash2, Edit3 } from 'lucide-react';
+import { Save, Play, Code2, FileJson, Hash, Layout, Plus } from 'lucide-react';
 import { generateOutput } from '../utils/generateOutput';
 import api from '../api';
+import { socket } from '../socket';
+import * as Y from 'yjs';
+import { MonacoBinding } from 'y-monaco';
 
 const EditorPage = () => {
     const [files, setFiles] = useState([]);
@@ -1562,139 +2619,206 @@ const EditorPage = () => {
     const [menuPos, setMenuPos] = useState(null);
     const [selectedFileId, setSelectedFileId] = useState(null);
 
+    // Yjs and Monaco Persistence
+    const yDocRef = useRef(new Y.Doc());
+    const editorRef = useRef(null);
+    const monacoRef = useRef(null);
+    const bindingRef = useRef(null);
+    const modelsRef = useRef(new Map());
+
     const activeFile = files.find(f => f.id === activeFileId);
 
-    // Fetch files on load and refresh
-    const fetchProject = async () => {
-        try {
-            const { data } = await api.get(`/projects/room/${roomId}`);
-            setFiles(data);
-            // On refresh, try to maintain selection or pick first
-            if (data.length > 0 && !activeFileId) {
-                setActiveFileId(data[0].id);
-            }
-        } catch (err) {
-            console.error("Failed to load project files", err);
+    // --- 1. NETWORK SYNC LOGIC ---
+    useEffect(() => {
+        const user = JSON.parse(localStorage.getItem('user') || '{}');
+
+        if (!socket.connected) {
+            socket.connect();
         }
+
+        socket.emit('join-room', { roomId, username: user.username || 'Anonymous' });
+
+        const onYjsUpdate = (data) => {
+            if (data.roomId === roomId && data.update) {
+                try {
+                    const updateArray = data.update instanceof Uint8Array
+                        ? data.update
+                        : new Uint8Array(data.update);
+
+                    Y.applyUpdate(yDocRef.current, updateArray, 'remote');
+                } catch (err) {
+                    console.error("Failed to apply remote Yjs update:", err);
+                }
+            }
+        };
+
+        socket.on('yjs-update', onYjsUpdate);
+
+        const onLocalUpdate = (update, origin) => {
+            if (origin !== 'remote') {
+                socket.emit('yjs-update', {
+                    roomId,
+                    update: Array.from(update)
+                });
+            }
+        };
+
+        yDocRef.current.on('update', onLocalUpdate);
+
+        return () => {
+            socket.off('yjs-update', onYjsUpdate);
+            yDocRef.current.off('update', onLocalUpdate);
+        };
+    }, [roomId]);
+
+    // --- 2. EDITOR MODEL & BINDING ---
+    const handleEditorDidMount = (editor, monaco) => {
+        editorRef.current = editor;
+        monacoRef.current = monaco;
+        if (activeFileId) switchToFile(activeFileId);
+    };
+
+    const switchToFile = (fileId) => {
+        if (!editorRef.current || !monacoRef.current || !fileId) return;
+        const file = files.find(f => f.id === fileId);
+        if (!file) return;
+
+        if (bindingRef.current) {
+            bindingRef.current.destroy();
+            bindingRef.current = null;
+        }
+
+        const yText = yDocRef.current.getText(fileId);
+
+        if (yText.toString() === '' && file.content) {
+            yText.insert(0, file.content);
+        }
+
+        const lang = file.language === 'javascript' ? 'javascript' : file.language;
+        const ext = file.name.split('.').pop();
+        const modelUri = monacoRef.current.Uri.parse(`inmemory://model/${fileId}.${ext}`);
+
+        let model = monacoRef.current.editor.getModel(modelUri);
+        if (!model) {
+            model = monacoRef.current.editor.createModel(yText.toString(), lang, modelUri);
+            modelsRef.current.set(fileId, model);
+        }
+
+        editorRef.current.setModel(model);
+
+        bindingRef.current = new MonacoBinding(
+            yText,
+            model,
+            new Set([editorRef.current])
+        );
     };
 
     useEffect(() => {
+        if (activeFileId) {
+            switchToFile(activeFileId);
+        }
+    }, [activeFileId, files.length]);
+
+    // --- 3. PROJECT DATA ---
+    useEffect(() => {
+        const fetchProject = async () => {
+            try {
+                const { data } = await api.get(`/projects/room/${roomId}`);
+                setFiles(data);
+                if (data.length > 0 && !activeFileId) {
+                    setActiveFileId(data[0].id);
+                }
+            } catch (err) {
+                console.error("Project fetch failed", err);
+            }
+        };
         fetchProject();
     }, [roomId]);
 
-    useEffect(() => {
-        const handleMessage = (event) => {
-            if (event.data.type === 'CONSOLE_LOG') {
-                setLogs(prev => [...prev, event.data.payload.join(' ')]);
-            }
-        };
-        window.addEventListener('message', handleMessage);
-        return () => window.removeEventListener('message', handleMessage);
-    }, []);
-
-    const createFile = async () => {
-        const fileName = prompt("Enter file name:");
-        if (!fileName) return;
-
-        // Frontend check for duplicate
-        if (files.some(f => f.name.toLowerCase() === fileName.toLowerCase())) {
-            alert("A file with this name already exists!");
-            return;
-        }
-
-        const extension = fileName.split('.').pop();
-        const langMap = { js: 'javascript', html: 'html', css: 'css' };
-
-        try {
-            const { data } = await api.post('/files', {
-                name: fileName,
-                content: '',
-                language: langMap[extension] || 'javascript',
-                roomId: roomId
-            });
-            setFiles(prev => [...prev, data]);
-            setActiveFileId(data.id);
-        } catch (err) {
-            alert(err.response?.data?.error || "Error creating file");
-        }
-    };
-
     const saveProject = async () => {
-        if (!activeFileId || !activeFile) return;
+        if (!activeFileId) return;
         try {
-            await api.put(`/projects/file/${activeFileId}`, { content: activeFile.content });
-            alert("Saved!");
+            const content = yDocRef.current.getText(activeFileId).toString();
+            await api.put(`/projects/file/${activeFileId}`, { content });
+            console.log("Saved to cloud!");
         } catch (err) {
-            alert("Save failed");
-        }
-    };
-
-    const deleteFile = async (id) => {
-        if (!window.confirm("Delete this file?")) return;
-        try {
-            await api.delete(`/files/${id}`);
-            const updated = files.filter(f => f.id !== id);
-            setFiles(updated);
-            if (activeFileId === id) setActiveFileId(updated[0]?.id || null);
-        } catch (err) { alert("Delete failed"); }
-    };
-
-    const renameFile = async (id, currentName) => {
-        const newName = prompt("New name:", currentName);
-        if (!newName || newName === currentName) return;
-
-        try {
-            await api.patch(`/projects/file/${id}/rename`, { name: newName });
-            setFiles(prev => prev.map(f => f.id === id ? { ...f, name: newName } : f));
-        } catch (err) {
-            alert(err.response?.data?.error || "Rename failed");
+            console.error("Save error", err);
         }
     };
 
     const runCode = () => {
         setLogs([]);
-        const html = files.find(f => f.name.toLowerCase().endsWith('.html'))?.content || '';
-        const css = files.find(f => f.name.toLowerCase().endsWith('.css'))?.content || '';
-        const js = files.find(f => f.name.toLowerCase().endsWith('.js'))?.content || '';
-        setSrcDoc(generateOutput(html, css, js));
-        setExecutionKey(prev => prev + 1);
+        const getC = (ext) => {
+            const f = files.find(file => file.name.toLowerCase().endsWith(ext));
+            return f ? yDocRef.current.getText(f.id).toString() : '';
+        };
+        setSrcDoc(generateOutput(getC('.html'), getC('.css'), getC('.js')));
+        setExecutionKey(v => v + 1);
     };
 
-    const handleContextMenu = (e, fileId) => {
-        e.preventDefault();
-        setMenuPos({ x: e.pageX, y: e.pageY });
-        setSelectedFileId(fileId);
+    useEffect(() => {
+        const h = (e) => {
+            if (e.data.type === 'CONSOLE_LOG') {
+                setLogs(p => [...p, e.data.payload.join(' ')]);
+            }
+        };
+        window.addEventListener('message', h);
+        return () => window.removeEventListener('message', h);
+    }, []);
+
+    const createFile = async () => {
+        const name = prompt("New file name:");
+        if (!name) return;
+        try {
+            const ext = name.split('.').pop();
+            const lang = { js: 'javascript', html: 'html', css: 'css' }[ext] || 'javascript';
+            const { data } = await api.post('/files', { name, content: '', language: lang, roomId });
+            setFiles(p => [...p, data]);
+            setActiveFileId(data.id);
+        } catch (err) {
+            console.error("Create failed", err);
+        }
     };
 
-    const getFileIcon = (name) => {
-        if (name.endsWith('.html')) return <Code2 size={14} className="text-orange-500" />;
-        if (name.endsWith('.css')) return <Hash size={14} className="text-blue-400" />;
-        if (name.endsWith('.js')) return <FileJson size={14} className="text-yellow-400" />;
-        return <Plus size={14} className="text-gray-400" />;
+    const deleteFile = async (id) => {
+        if (!confirm("Delete this file?")) return;
+        try {
+            await api.delete(`/files/${id}`);
+            const updated = files.filter(f => f.id !== id);
+            setFiles(updated);
+            if (activeFileId === id) setActiveFileId(updated[0]?.id || null);
+            modelsRef.current.delete(id);
+        } catch (err) {
+            console.error("Delete failed", err);
+        }
     };
 
     const sidebarContent = (
-        <div className="flex flex-col h-full" onClick={() => setMenuPos(null)}>
-            <div className="p-3 border-b border-white/5 flex items-center justify-between">
-                <span className="text-[10px] text-gray-500 font-bold uppercase tracking-widest">Explorer</span>
-                <button onClick={createFile} className="p-1 hover:bg-white/10 rounded text-gray-400"><Plus size={14} /></button>
+        <div className="flex flex-col h-full bg-[#1e1e1e]" onClick={() => setMenuPos(null)}>
+            <div className="p-4 border-b border-white/5 flex justify-between items-center">
+                <span className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Workspace</span>
+                <button onClick={createFile} className="p-1 hover:bg-white/10 rounded transition-colors"><Plus size={14} /></button>
             </div>
             <div className="flex-grow overflow-y-auto">
                 {files.map(file => (
                     <div
                         key={file.id}
-                        onContextMenu={(e) => handleContextMenu(e, file.id)}
+                        onContextMenu={(e) => {
+                            e.preventDefault();
+                            setMenuPos({ x: e.pageX, y: e.pageY });
+                            setSelectedFileId(file.id);
+                        }}
                         onClick={() => setActiveFileId(file.id)}
-                        className={`px-4 py-1.5 text-sm cursor-pointer flex items-center gap-2 ${activeFileId === file.id ? 'bg-accent/20 text-white' : 'hover:bg-white/5 text-gray-400'}`}
+                        className={`px-4 py-2 text-sm flex items-center gap-2 cursor-pointer transition-colors ${activeFileId === file.id ? 'bg-accent/20 text-white border-l-2 border-accent' : 'text-gray-400 hover:bg-white/5'}`}
                     >
-                        {getFileIcon(file.name)} {file.name}
+                        {file.name.endsWith('.html') ? <Code2 size={14} className="text-orange-500" /> : file.name.endsWith('.js') ? <FileJson size={14} className="text-yellow-500" /> : <Hash size={14} className="text-blue-500" />}
+                        <span className="truncate">{file.name}</span>
                     </div>
                 ))}
             </div>
             {menuPos && (
-                <div className="fixed bg-sidebar border border-white/10 shadow-2xl rounded py-1 z-50 w-40" style={{ top: menuPos.y, left: menuPos.x }}>
-                    <button onClick={() => renameFile(selectedFileId, files.find(f => f.id === selectedFileId)?.name)} className="w-full text-left px-3 py-2 text-xs text-gray-300 hover:bg-accent hover:text-white flex items-center gap-2"><Edit3 size={12} /> Rename</button>
-                    <button onClick={() => deleteFile(selectedFileId)} className="w-full text-left px-3 py-2 text-xs text-red-400 hover:bg-red-500 hover:text-white flex items-center gap-2"><Trash2 size={12} /> Delete</button>
+                <div className="fixed bg-[#252526] border border-white/10 shadow-2xl py-1 z-50 w-32" style={{ top: menuPos.y, left: menuPos.x }}>
+                    <button onClick={() => deleteFile(selectedFileId)} className="w-full text-left px-3 py-1.5 text-xs text-red-400 hover:bg-red-500/20">Delete File</button>
                 </div>
             )}
         </div>
@@ -1702,33 +2826,50 @@ const EditorPage = () => {
 
     return (
         <MainLayout sidebarContent={sidebarContent}>
-            <div className="flex flex-col h-full" onClick={() => setMenuPos(null)}>
-                <div className="flex bg-sidebar border-b border-white/10 items-center px-2">
-                    <div className="flex overflow-x-auto flex-grow no-scrollbar">
+            <div className="flex flex-col h-full bg-[#1e1e1e]" onClick={() => setMenuPos(null)}>
+                <div className="flex bg-[#252526] items-center px-2 border-b border-black/20">
+                    <div className="flex flex-grow overflow-x-auto no-scrollbar">
                         {files.map(file => (
-                            <button key={file.id} onClick={() => setActiveFileId(file.id)} className={`px-4 py-2 text-xs border-r border-white/5 whitespace-nowrap ${activeFileId === file.id ? 'bg-editor text-white border-t-2 border-t-accent' : 'text-gray-500'}`}>
+                            <button key={file.id} onClick={() => setActiveFileId(file.id)} className={`px-4 py-2.5 text-xs border-r border-white/5 whitespace-nowrap transition-colors ${activeFileId === file.id ? 'bg-[#1e1e1e] text-white border-t-2 border-accent' : 'text-gray-500 hover:bg-white/5'}`}>
                                 {file.name}
                             </button>
                         ))}
                     </div>
-                    <div className="flex gap-1 ml-2">
-                        <button onClick={saveProject} className="p-2 text-accent hover:text-white"><Save size={16} /></button>
-                        <button onClick={runCode} className="p-2 text-green-500 hover:text-white"><Play size={16} /></button>
-                        <button onClick={() => setShowPreview(!showPreview)} className="p-2 text-gray-400 hover:text-white"><Layout size={16} /></button>
+                    <div className="flex gap-1 ml-auto px-2">
+                        <button onClick={saveProject} className="p-2 text-accent hover:text-white transition-colors" title="Save All"><Save size={16} /></button>
+                        <button onClick={runCode} className="p-2 text-green-500 hover:text-white transition-colors" title="Run Code"><Play size={16} /></button>
+                        <button onClick={() => setShowPreview(!showPreview)} className="p-2 text-gray-400 hover:text-white transition-colors"><Layout size={16} /></button>
                     </div>
                 </div>
+
                 <div className="flex flex-grow overflow-hidden">
-                    <div className={`${showPreview ? 'w-1/2' : 'w-full'} h-full border-r border-white/10`}>
+                    <div className={`${showPreview ? 'w-1/2' : 'w-full'} h-full border-r border-white/10 relative`}>
                         {activeFile ? (
-                            <Editor height="100%" theme="vs-dark" language={activeFile.language} value={activeFile.content} onChange={(v) => setFiles(prev => prev.map(f => f.id === activeFileId ? { ...f, content: v } : f))} />
-                        ) : <div className="p-10 text-gray-600 italic">Select a file...</div>}
+                            <Editor
+                                height="100%"
+                                theme="vs-dark"
+                                onMount={handleEditorDidMount}
+                                options={{
+                                    fontSize: 14,
+                                    minimap: { enabled: false },
+                                    wordWrap: 'on',
+                                    automaticLayout: true,
+                                    scrollBeyondLastLine: false,
+                                    padding: { top: 10 }
+                                }}
+                            />
+                        ) : <div className="flex items-center justify-center h-full text-gray-700 italic">Select a file from the explorer</div>}
                     </div>
                     {showPreview && (
                         <div className="w-1/2 h-full flex flex-col bg-white">
-                            <iframe key={executionKey} srcDoc={srcDoc} className="flex-grow w-full border-none" sandbox="allow-scripts" />
-                            <div className="h-40 bg-editor border-t border-white/10 p-2 font-mono text-[10px] overflow-y-auto">
-                                <div className="text-gray-500 mb-1 border-b border-white/5 pb-1 flex justify-between uppercase"><span>Console</span><button onClick={() => setLogs([])}>Clear</button></div>
-                                {logs.map((log, i) => <div key={i} className="text-green-400 py-0.5 border-b border-white/5 last:border-none">{`> ${log}`}</div>)}
+                            <iframe key={executionKey} srcDoc={srcDoc} className="flex-grow w-full border-none" sandbox="allow-scripts" title="Preview" />
+                            <div className="h-40 bg-[#1e1e1e] border-t border-white/10 overflow-y-auto p-2 font-mono text-[11px]">
+                                <div className="text-gray-500 mb-1 flex justify-between border-b border-white/5 uppercase text-[9px] font-bold pb-1">
+                                    <span>Console Output</span>
+                                    <button onClick={() => setLogs([])} className="hover:text-white transition-colors">Clear</button>
+                                </div>
+                                {logs.map((l, i) => <div key={i} className="text-green-400 py-0.5 border-b border-white/5 last:border-none font-medium truncate">{`> ${l}`}</div>)}
+                                {logs.length === 0 && <div className="text-gray-600 italic mt-2 text-center">Run code to see logs...</div>}
                             </div>
                         </div>
                     )}

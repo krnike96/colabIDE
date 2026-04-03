@@ -5,25 +5,26 @@ const File = sequelize.define('File', {
   id: {
     type: DataTypes.UUID,
     defaultValue: DataTypes.UUIDV4,
-    primaryKey: true
+    primaryKey: true,
   },
   name: {
     type: DataTypes.STRING,
-    allowNull: false
+    allowNull: false,
   },
   content: {
     type: DataTypes.TEXT,
-    defaultValue: ''
+    defaultValue: '',
   },
   language: {
-    type: DataTypes.STRING, // HTML, CSS, or JS
-    allowNull: false
-  }
+    type: DataTypes.STRING,
+    allowNull: false,
+  },
 }, {
+  // THIS IS THE FIX: A unique index across name AND RoomId
   indexes: [
     {
       unique: true,
-      fields: ['name', 'RoomId'] // This prevents the duplicate index.html issue
+      fields: ['name', 'RoomId']
     }
   ]
 });

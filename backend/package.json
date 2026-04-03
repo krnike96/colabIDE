@@ -27,6 +27,7 @@
     "socket.io": "^4.8.3",
     "socket.io-client": "^4.8.3",
     "y-protocols": "^1.0.7",
+    "y-websocket": "^3.0.0",
     "yjs": "^13.6.30"
   },
   "devDependencies": {
