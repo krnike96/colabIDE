@@ -11,10 +11,14 @@ export const setupSockets = (io) => {
       socket.to(roomId).emit('user-joined', { username, socketId: socket.id });
     });
 
-    // Yjs Sync Protocol: Broadcast binary updates to everyone in the room
-    socket.on('yjs-update', ({ roomId, update }) => {
-      // update is a Uint8Array sent as a Buffer
-      socket.to(roomId).emit('yjs-update', update);
+    // Yjs Document Sync Protocol: Broadcast binary updates and sync flags
+    socket.on('yjs-update', (data) => {
+      socket.to(data.roomId).emit('yjs-update', data);
+    });
+
+    // Yjs Awareness Protocol: Broadcast cursor and presence updates
+    socket.on('awareness-update', (data) => {
+      socket.to(data.roomId).emit('awareness-update', data);
     });
 
     socket.on('send-message', ({ roomId, message, sender }) => {
@@ -23,10 +27,6 @@ export const setupSockets = (io) => {
         sender,
         timestamp: new Date()
       });
-    });
-
-    socket.on('cursor-move', ({ roomId, username, cursorData }) => {
-      socket.to(roomId).emit('cursor-update', { username, cursorData });
     });
 
     socket.on('disconnect', () => {

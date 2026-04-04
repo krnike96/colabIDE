@@ -1,14 +1,80 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useParams } from 'react-router-dom';
-import MainLayout from '../components/MainLayout';
 import Editor from '@monaco-editor/react';
-import { Save, Play, Code2, FileJson, Hash, Layout, Plus, Trash2, Edit3, Loader2 } from 'lucide-react';
+import { Save, Play, Code2, FileJson, Hash, Layout, Plus, Trash2, Edit3, Loader2, Files, MessageSquare, Users, Settings } from 'lucide-react';
 import { generateOutput } from '../utils/generateOutput';
 import api from '../api';
 import { socket } from '../socket';
 import * as Y from 'yjs';
 import { MonacoBinding } from 'y-monaco';
+import * as awarenessProtocol from 'y-protocols/awareness';
 
+// Utility to generate a consistent HEX color based on a username string
+// Hex is preferred for y-monaco to ensure background-color inheritance works flawlessly
+const stringToHexColor = (str) => {
+    let hash = 0;
+    for (let i = 0; i < str.length; i++) {
+        hash = str.charCodeAt(i) + ((hash << 5) - hash);
+    }
+    const c = (hash & 0x00FFFFFF).toString(16).toUpperCase();
+    return '#' + '00000'.substring(0, 6 - c.length) + c;
+};
+
+// --- MainLayout Component (Consolidated to ensure reliable resolution) ---
+const MainLayout = ({ children, sidebarPanels = {}, activeUserCount = 0 }) => {
+    const [activeTab, setActiveTab] = useState('files');
+
+    return (
+        <div className="flex h-screen w-screen bg-[#1e1e1e] text-gray-300 font-sans">
+            {/* 1. Activity Bar (Slim Left) */}
+            <div className="w-12 bg-[#333333] flex flex-col items-center py-4 space-y-6 border-r border-white/10 z-20">
+                <button onClick={() => setActiveTab('files')} title="Files" className="w-full flex justify-center outline-none">
+                    <Files className={`cursor-pointer transition-colors ${activeTab === 'files' ? 'text-white' : 'text-gray-500 hover:text-gray-300'}`} />
+                </button>
+
+                {/* Users Icon with Active Count Badge */}
+                <div className="relative w-full flex justify-center">
+                    <button onClick={() => setActiveTab('users')} title="Active Users" className="outline-none">
+                        <Users className={`cursor-pointer transition-colors ${activeTab === 'users' ? 'text-white' : 'text-gray-500 hover:text-gray-300'}`} />
+                    </button>
+                    {activeUserCount > 0 && (
+                        <div className="absolute top-0 right-1 bg-blue-500 text-white text-[9px] font-bold px-1.5 py-0.5 rounded-full transform translate-x-1/2 -translate-y-1/2 pointer-events-none shadow-md">
+                            {activeUserCount}
+                        </div>
+                    )}
+                </div>
+
+                <button onClick={() => setActiveTab('chat')} title="Chat" className="w-full flex justify-center outline-none">
+                    <MessageSquare className={`cursor-pointer transition-colors ${activeTab === 'chat' ? 'text-white' : 'text-gray-500 hover:text-gray-300'}`} />
+                </button>
+
+                <div className="flex-grow"></div>
+
+                <button title="Settings" className="w-full flex justify-center outline-none">
+                    <Settings className="text-gray-500 cursor-pointer mb-2 hover:text-gray-300 transition-colors" />
+                </button>
+            </div>
+
+            {/* 2. Side Pane (Dynamic Content) */}
+            <div className="w-64 bg-[#252526] border-r border-white/10 flex flex-col z-10">
+                <div className="flex-grow overflow-hidden">
+                    {sidebarPanels[activeTab] || (
+                        <div className="p-4 text-sm text-gray-500 italic">
+                            {activeTab.charAt(0).toUpperCase() + activeTab.slice(1)} coming soon...
+                        </div>
+                    )}
+                </div>
+            </div>
+
+            {/* 3. Main Editor Area */}
+            <div className="flex-grow flex flex-col overflow-hidden relative">
+                {children}
+            </div>
+        </div>
+    );
+};
+
+// --- Main EditorPage Component ---
 const EditorPage = () => {
     const { roomId } = useParams();
     const [files, setFiles] = useState([]);
@@ -18,22 +84,22 @@ const EditorPage = () => {
     const [showPreview, setShowPreview] = useState(true);
     const [executionKey, setExecutionKey] = useState(0);
 
-    // Crucial: Track if we have received the full collaborative state from peers
     const [isSynced, setIsSynced] = useState(false);
+    const [activeUsers, setActiveUsers] = useState([]);
 
     const [menuPos, setMenuPos] = useState(null);
     const [selectedFileId, setSelectedFileId] = useState(null);
 
     // PERSISTENT REFS
     const yDocRef = useRef(new Y.Doc());
-    const editorRef = useRef(null);
+    const awarenessRef = useRef(new awarenessProtocol.Awareness(yDocRef.current));
     const bindingRef = useRef(null);
     const seededFiles = useRef(new Set());
     const filesRef = useRef(files);
 
     const activeFile = files.find(f => f.id === activeFileId);
 
-    // Keep ref updated to avoid stale closures in setTimeout
+    // Keep ref updated to avoid stale closures
     useEffect(() => {
         filesRef.current = files;
     }, [files]);
@@ -42,119 +108,146 @@ const EditorPage = () => {
     useEffect(() => {
         const userStr = localStorage.getItem('user');
         const user = userStr ? JSON.parse(userStr) : {};
+        const username = user.username || 'Anonymous';
 
         if (!socket.connected) {
             socket.connect();
         }
 
-        socket.emit('join-room', { roomId, username: user.username || 'Anonymous' });
+        socket.emit('join-room', { roomId, username });
+
+        // --- A. Setup Local User Awareness ---
+        const userColor = stringToHexColor(username);
+        awarenessRef.current.setLocalStateField('user', {
+            name: username,
+            color: userColor
+        });
+
+        const handleAwarenessChange = ({ added, updated, removed }) => {
+            const states = Array.from(awarenessRef.current.getStates().values());
+            const users = states.map(state => state.user).filter(Boolean);
+
+            // Deduplicate users by name for the UI sidebar
+            const uniqueUsers = Array.from(new Map(users.map(u => [u.name, u])).values());
+            setActiveUsers(uniqueUsers);
+
+            // Broadcast awareness changes to the room
+            const changedClients = added.concat(updated, removed);
+            const update = awarenessProtocol.encodeAwarenessUpdate(awarenessRef.current, changedClients);
+            socket.emit('awareness-update', { roomId, update: Array.from(update) });
+        };
+
+        awarenessRef.current.on('change', handleAwarenessChange);
+
+        const handleRemoteAwareness = (data) => {
+            try {
+                const uint8Update = new Uint8Array(data.update || data);
+                awarenessProtocol.applyAwarenessUpdate(awarenessRef.current, uint8Update, 'remote');
+            } catch (err) {
+                console.error("Awareness Sync Error:", err);
+            }
+        };
 
         const handleRemoteUpdate = (data) => {
-            // 1. If someone else just joined and needs the history, send them our full state
-            if (data.requestSync) {
-                const fullState = Y.encodeStateAsUpdate(yDocRef.current);
-                socket.emit('yjs-update', {
-                    roomId,
-                    update: Array.from(fullState),
-                    isFullState: true
-                });
-                return;
-            }
+            try {
+                // 1. Send full state to newly joined peers
+                if (data.requestSync) {
+                    const fullState = Y.encodeStateAsUpdate(yDocRef.current);
+                    socket.emit('yjs-update', {
+                        roomId,
+                        update: Array.from(fullState),
+                        isFullState: true
+                    });
+                    return;
+                }
 
-            // 2. Apply incoming updates (both incremental and full states)
-            const update = data.update || data;
-            if (update) {
-                try {
-                    const uint8Update = new Uint8Array(update);
-                    // 'remote' origin ensures we don't infinitely echo updates back
+                // 2. Apply incoming state updates
+                if (data.roomId === roomId && data.update) {
+                    const uint8Update = new Uint8Array(data.update);
+                    // Using 'remote' origin stops the local observer from echoing this back
                     Y.applyUpdate(yDocRef.current, uint8Update, 'remote');
 
                     if (data.isFullState) {
                         setIsSynced(true);
                     }
-                } catch (err) {
-                    console.error("Yjs Sync Error:", err);
                 }
+            } catch (err) {
+                console.error("Yjs Sync Error:", err);
             }
         };
 
         const handleLocalUpdate = (update, origin) => {
+            // Broadcast local changes safely
             if (origin !== 'remote') {
                 socket.emit('yjs-update', {
                     roomId,
-                    update: Array.from(update) // Convert safely for JSON socket transport
+                    update: Array.from(update)
                 });
             }
         };
 
         socket.on('yjs-update', handleRemoteUpdate);
+        socket.on('awareness-update', handleRemoteAwareness);
         yDocRef.current.on('update', handleLocalUpdate);
 
-        // Request the current state of the document from anyone already in the room
+        // Ask existing peers for the full document state
         socket.emit('yjs-update', { roomId, requestSync: true });
 
-        // Fallback: If we don't get a response in 1.5 seconds, assume we are the first person here.
+        // Fallback: If alone in the room, assume sync is complete
         const syncTimeout = setTimeout(() => {
             setIsSynced(true);
         }, 1500);
 
         return () => {
             socket.off('yjs-update', handleRemoteUpdate);
+            socket.off('awareness-update', handleRemoteAwareness);
             yDocRef.current.off('update', handleLocalUpdate);
+            awarenessRef.current.off('change', handleAwarenessChange);
             clearTimeout(syncTimeout);
         };
     }, [roomId]);
 
     // --- 2. BINDING & MODEL MANAGEMENT ---
-    const bindEditorToYjs = (fileId) => {
-        if (!editorRef.current || !fileId || !isSynced) return;
+    const handleEditorDidMount = (editor) => {
+        if (!activeFileId || !isSynced) return;
 
+        // Cleanup any lingering binding
         if (bindingRef.current) {
             bindingRef.current.destroy();
             bindingRef.current = null;
         }
 
-        const fileIdStr = fileId.toString();
+        const fileIdStr = activeFileId.toString();
         const yText = yDocRef.current.getText(fileIdStr);
 
-        // Wait slightly for Monaco to definitely map the new model via the `path` prop
-        setTimeout(() => {
-            if (!editorRef.current) return;
-            const model = editorRef.current.getModel();
-            if (!model) return;
-
-            // Seed DB content ONLY if it's our first time looking at this file 
-            // AND the collaborative document is truly empty.
-            if (!seededFiles.current.has(fileIdStr)) {
-                const currentFile = filesRef.current.find(f => f.id === fileId);
-                if (yText.toString() === '' && currentFile?.content) {
-                    yText.insert(0, currentFile.content);
-                }
-                seededFiles.current.add(fileIdStr);
+        // Seed DB content ONLY if it's our first time looking at this file 
+        // AND the collaborative text is completely empty.
+        if (!seededFiles.current.has(fileIdStr)) {
+            const currentFile = filesRef.current.find(f => f.id === activeFileId);
+            if (yText.toString() === '' && currentFile?.content) {
+                yText.insert(0, currentFile.content);
             }
+            seededFiles.current.add(fileIdStr);
+        }
 
-            bindingRef.current = new MonacoBinding(
-                yText,
-                model,
-                new Set([editorRef.current])
-            );
-        }, 50);
+        // Bind the Yjs shared text AND Awareness to this specific editor model instance
+        bindingRef.current = new MonacoBinding(
+            yText,
+            editor.getModel(),
+            new Set([editor]),
+            awarenessRef.current // Crucial: Enables remote cursors
+        );
     };
 
-    const handleEditorDidMount = (editor) => {
-        editorRef.current = editor;
-        bindEditorToYjs(activeFileId);
-    };
-
+    // Cleanup binding strictly when unmounting or switching files
     useEffect(() => {
-        bindEditorToYjs(activeFileId);
         return () => {
             if (bindingRef.current) {
                 bindingRef.current.destroy();
                 bindingRef.current = null;
             }
         };
-    }, [activeFileId, isSynced]);
+    }, [activeFileId]);
 
     // --- 3. DATA FETCHING & FILE OPS ---
     const loadProject = async () => {
@@ -250,10 +343,11 @@ const EditorPage = () => {
         return <Plus size={14} className="text-gray-400" />;
     };
 
-    const sidebarContent = (
-        <div className="flex flex-col h-full bg-[#1e1e1e]" onClick={() => setMenuPos(null)}>
+    // --- SIDEBAR PANELS ---
+    const filesPanel = (
+        <div className="flex flex-col h-full bg-[#252526]" onClick={() => setMenuPos(null)}>
             <div className="p-4 border-b border-white/5 flex justify-between items-center">
-                <span className="text-[10px] font-bold text-gray-500 uppercase tracking-widest">Explorer</span>
+                <span className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Explorer</span>
                 <button onClick={createFile} className="p-1 hover:bg-white/10 rounded transition-colors text-gray-400"><Plus size={14} /></button>
             </div>
             <div className="flex-grow overflow-y-auto">
@@ -266,7 +360,7 @@ const EditorPage = () => {
                             setSelectedFileId(file.id);
                         }}
                         onClick={() => setActiveFileId(file.id)}
-                        className={`px-4 py-2 text-sm flex items-center gap-2 cursor-pointer transition-colors ${activeFileId === file.id ? 'bg-accent/20 text-white' : 'text-gray-400 hover:bg-white/5'}`}
+                        className={`px-4 py-2 text-sm flex items-center gap-2 cursor-pointer transition-colors ${activeFileId === file.id ? 'bg-accent/20 text-white border-l-2 border-accent' : 'text-gray-400 hover:bg-white/5'}`}
                     >
                         {getFileIcon(file.name)}
                         <span className="truncate">{file.name}</span>
@@ -286,16 +380,73 @@ const EditorPage = () => {
         </div>
     );
 
+    const usersPanel = (
+        <div className="flex flex-col h-full bg-[#252526]">
+            <div className="p-4 border-b border-white/5 flex justify-between items-center">
+                <span className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Active Users ({activeUsers.length})</span>
+            </div>
+            <div className="flex-grow overflow-y-auto p-2 space-y-1">
+                {activeUsers.map((u, i) => (
+                    <div key={i} className="flex items-center gap-3 p-2 rounded hover:bg-white/5 transition-colors">
+                        <div
+                            className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold text-white shadow-sm"
+                            style={{ backgroundColor: u.color }}
+                        >
+                            {u.name.charAt(0).toUpperCase()}
+                        </div>
+                        <span className="text-sm font-medium text-gray-300 truncate">{u.name}</span>
+                        <div className="w-2 h-2 rounded-full bg-green-500 ml-auto shadow-[0_0_8px_rgba(34,197,94,0.6)]"></div>
+                    </div>
+                ))}
+            </div>
+        </div>
+    );
+
     return (
-        <MainLayout sidebarContent={sidebarContent}>
+        <MainLayout sidebarPanels={{ files: filesPanel, users: usersPanel }} activeUserCount={activeUsers.length}>
+
+            {/* CSS Injection to Guarantee y-monaco cursors are correctly styled and visible */}
+            <style>{`
+                .yRemoteSelection {
+                    background-color: inherit;
+                    opacity: 0.4;
+                }
+                .yRemoteSelectionHead {
+                    position: absolute;
+                    border-left: 2px solid;
+                    height: 100%;
+                    box-sizing: border-box;
+                    z-index: 10;
+                }
+                /* Cursors should show the name of that specific user */
+                .yRemoteSelectionHead::after {
+                    content: attr(data-user);
+                    position: absolute;
+                    top: -20px;
+                    left: -2px;
+                    color: white;
+                    font-size: 11px;
+                    font-family: ui-sans-serif, system-ui, sans-serif;
+                    font-weight: 600;
+                    padding: 2px 6px;
+                    border-radius: 4px;
+                    border-bottom-left-radius: 0;
+                    white-space: nowrap;
+                    pointer-events: none;
+                    z-index: 50;
+                    background-color: inherit;
+                    box-shadow: 0 2px 4px rgba(0,0,0,0.3);
+                }
+            `}</style>
+
             <div className="flex flex-col h-full bg-[#1e1e1e]" onClick={() => setMenuPos(null)}>
-                <div className="flex bg-[#1e1e1e] border-b border-white/10 items-center px-2">
+                <div className="flex bg-[#1e1e1e] border-b border-white/10 items-center px-2 z-10">
                     <div className="flex flex-grow overflow-x-auto no-scrollbar">
                         {files.map(file => (
                             <button
                                 key={file.id}
                                 onClick={() => setActiveFileId(file.id)}
-                                className={`px-4 py-2 text-xs border-r border-white/5 whitespace-nowrap transition-colors ${activeFileId === file.id ? 'bg-[#1e1e1e] text-white border-t-2 border-accent' : 'text-gray-500'}`}
+                                className={`px-4 py-2.5 text-xs border-r border-white/5 whitespace-nowrap transition-colors ${activeFileId === file.id ? 'bg-[#1e1e1e] text-white border-t-2 border-accent' : 'text-gray-500 hover:bg-white/5'}`}
                             >
                                 {file.name}
                             </button>
@@ -317,16 +468,18 @@ const EditorPage = () => {
                             </div>
                         ) : activeFile ? (
                             <Editor
+                                key={activeFile.id}
                                 height="100%"
                                 theme="vs-dark"
-                                path={activeFile.id.toString()} // Forces Monaco to isolate history and text models per file
+                                path={activeFile.id.toString()}
                                 language={activeFile.language}
                                 onMount={handleEditorDidMount}
                                 options={{
                                     fontSize: 14,
                                     minimap: { enabled: false },
                                     automaticLayout: true,
-                                    wordWrap: 'on'
+                                    wordWrap: 'on',
+                                    padding: { top: 24 } // Extra padding so cursor names don't get cut off on line 1
                                 }}
                             />
                         ) : <div className="flex items-center justify-center h-full text-gray-700 italic">Select a file...</div>}
