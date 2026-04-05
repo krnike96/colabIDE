@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import api from '../api';
 
@@ -7,18 +7,29 @@ const Login = () => {
     const [password, setPassword] = useState('');
     const navigate = useNavigate();
 
+    // Check if there's a redirect target stored from before login
+    useEffect(() => {
+        const redirect = sessionStorage.getItem('redirectAfterLogin');
+        if (redirect) {
+            // Clear it after reading? We'll clear after login success.
+        }
+    }, []);
+
     const handleLogin = async (e) => {
         e.preventDefault();
         try {
-            // Send login request to your backend API
             const { data } = await api.post('/auth/login', { email, password });
-
-            // Store the JWT and user info for persistence
             localStorage.setItem('token', data.token);
             localStorage.setItem('user', JSON.stringify(data.user));
 
-            // Redirect to the lobby instead of a hardcoded room
-            navigate('/lobby');
+            // Check if we have a saved redirect path
+            const redirectPath = sessionStorage.getItem('redirectAfterLogin');
+            if (redirectPath) {
+                sessionStorage.removeItem('redirectAfterLogin');
+                navigate(redirectPath);
+            } else {
+                navigate('/lobby');
+            }
         } catch (error) {
             alert(error.response?.data?.error || "Login failed. Please check your credentials.");
         }

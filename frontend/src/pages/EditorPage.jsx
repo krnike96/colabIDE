@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';   // <-- added useNavigate
 import Editor from '@monaco-editor/react';
-import { Save, Play, Code2, FileJson, Hash, Layout, Plus, Trash2, Edit3, Loader2, Files, MessageSquare, Users, Settings } from 'lucide-react';
+import { Copy, Check, Save, Play, Code2, FileJson, Hash, Layout, Plus, Trash2, Edit3, Loader2, Files, MessageSquare, Users, Settings } from 'lucide-react';
 import { generateOutput } from '../utils/generateOutput';
 import api from '../api';
 import { socket } from '../socket';
@@ -72,12 +72,11 @@ const EditorPage = () => {
     const [logs, setLogs] = useState([]);
     const [showPreview, setShowPreview] = useState(true);
     const [executionKey, setExecutionKey] = useState(0);
-
     const [isSynced, setIsSynced] = useState(false);
     const [activeUsers, setActiveUsers] = useState([]);
-
     const [menuPos, setMenuPos] = useState(null);
     const [selectedFileId, setSelectedFileId] = useState(null);
+    const [linkCopied, setLinkCopied] = useState(false);
 
     // PERSISTENT REFS
     const yDocRef = useRef(new Y.Doc());
@@ -392,6 +391,13 @@ const EditorPage = () => {
         </div>
     );
 
+    const copyRoomLink = () => {
+        const link = `${window.location.origin}/join/${roomId}`;
+        navigator.clipboard.writeText(link);
+        setLinkCopied(true);
+        setTimeout(() => setLinkCopied(false), 2000);
+    };
+
     return (
         <MainLayout sidebarPanels={{ files: filesPanel, users: usersPanel }} activeUserCount={activeUsers.length}>
             <style>{`
@@ -439,6 +445,9 @@ const EditorPage = () => {
                         <button onClick={saveProject} className="p-2 text-accent hover:text-white" title="Save All"><Save size={16} /></button>
                         <button onClick={runCode} className="p-2 text-green-500 hover:text-white" title="Run Code"><Play size={16} /></button>
                         <button onClick={() => setShowPreview(!showPreview)} className="p-2 text-gray-400 hover:text-white"><Layout size={16} /></button>
+                        <button onClick={copyRoomLink} className="p-2 text-gray-400 hover:text-white" title="Copy invite link">
+                            {linkCopied ? <Check size={16} className="text-green-500" /> : <Copy size={16} />}
+                        </button>
                     </div>
                 </div>
                 <div className="flex flex-grow overflow-hidden">

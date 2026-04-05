@@ -40,6 +40,16 @@ class RoomController {
       res.status(400).json({ error: error.message });
     }
   }
+
+  async getRoomJoinInfo(req, res) {
+    try {
+      const { roomId } = req.params;
+      const room = await RoomService.getRoomDetails(roomId);
+      res.status(200).json({ id: room.id, name: room.name });
+    } catch (error) {
+      res.status(404).json({ error: error.message });
+    }
+  }
 }
 
 export default new RoomController();

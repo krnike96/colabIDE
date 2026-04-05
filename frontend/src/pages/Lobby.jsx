@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import api from '../api';
+import { Copy, Check } from 'lucide-react';   // added icons
 
 const Lobby = () => {
     const [rooms, setRooms] = useState([]);
@@ -10,6 +11,7 @@ const Lobby = () => {
     const [roomName, setRoomName] = useState('');
     const [roomPassword, setRoomPassword] = useState('');
     const [isLoading, setIsLoading] = useState(false);
+    const [copiedRoomId, setCopiedRoomId] = useState(null); // track which room was copied
     const navigate = useNavigate();
 
     const fetchRooms = async () => {
@@ -54,6 +56,13 @@ const Lobby = () => {
         }
     };
 
+    const copyRoomLink = (roomId) => {
+        const link = `${window.location.origin}/join/${roomId}`;
+        navigator.clipboard.writeText(link);
+        setCopiedRoomId(roomId);
+        setTimeout(() => setCopiedRoomId(null), 2000);
+    };
+
     return (
         <div className="h-screen w-full bg-editor flex flex-col text-white">
             <div className="bg-sidebar p-4 flex justify-between items-center border-b border-white/10">
@@ -73,14 +82,29 @@ const Lobby = () => {
                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                         {rooms.map(room => (
                             <div key={room.id} className="bg-sidebar p-4 rounded border border-white/10">
-                                <h3 className="font-semibold">{room.name}</h3>
-                                <p className="text-sm text-gray-400">Room ID: {room.id.slice(0, 8)}...</p>
+                                <div className="flex justify-between items-start">
+                                    <div>
+                                        <h3 className="font-semibold">{room.name}</h3>
+                                        <p className="text-sm text-gray-400">ID: {room.id.slice(0, 8)}...</p>
+                                    </div>
+                                    <button
+                                        onClick={() => copyRoomLink(room.id)}
+                                        className="p-1 hover:bg-white/10 rounded transition-colors"
+                                        title="Copy invite link"
+                                    >
+                                        {copiedRoomId === room.id ? (
+                                            <Check size={16} className="text-green-500" />
+                                        ) : (
+                                            <Copy size={16} className="text-gray-400" />
+                                        )}
+                                    </button>
+                                </div>
                                 <button
                                     onClick={() => {
                                         setSelectedRoom(room);
                                         setShowJoinModal(true);
                                     }}
-                                    className="mt-2 px-3 py-1 bg-accent rounded text-sm hover:bg-blue-600"
+                                    className="mt-2 px-3 py-1 bg-accent rounded text-sm hover:bg-blue-600 w-full"
                                 >
                                     Join
                                 </button>
@@ -90,7 +114,7 @@ const Lobby = () => {
                 )}
             </div>
 
-            {/* Create Modal */}
+            {/* Create Modal (unchanged) */}
             {showCreateModal && (
                 <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
                     <div className="bg-sidebar rounded p-6 w-96">
@@ -121,7 +145,7 @@ const Lobby = () => {
                 </div>
             )}
 
-            {/* Join Modal */}
+            {/* Join Modal (unchanged) */}
             {showJoinModal && selectedRoom && (
                 <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
                     <div className="bg-sidebar rounded p-6 w-96">
