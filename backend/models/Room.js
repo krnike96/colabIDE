@@ -14,6 +14,10 @@ const Room = sequelize.define('Room', {
   adminId: {
     type: DataTypes.UUID,
     allowNull: false,
+  },
+  password: {
+    type: DataTypes.STRING,
+    allowNull: false,
   }
 });
 

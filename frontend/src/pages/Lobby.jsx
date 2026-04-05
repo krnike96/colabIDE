@@ -1,71 +1,151 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import api from '../api';
 
 const Lobby = () => {
+    const [rooms, setRooms] = useState([]);
+    const [showCreateModal, setShowCreateModal] = useState(false);
+    const [showJoinModal, setShowJoinModal] = useState(false);
+    const [selectedRoom, setSelectedRoom] = useState(null);
     const [roomName, setRoomName] = useState('');
+    const [roomPassword, setRoomPassword] = useState('');
     const [isLoading, setIsLoading] = useState(false);
     const navigate = useNavigate();
+
+    const fetchRooms = async () => {
+        try {
+            const { data } = await api.get('/rooms');
+            setRooms(data);
+        } catch (err) {
+            console.error('Failed to fetch rooms', err);
+        }
+    };
+
+    useEffect(() => {
+        fetchRooms();
+        const interval = setInterval(fetchRooms, 30000);
+        return () => clearInterval(interval);
+    }, []);
 
     const handleCreateRoom = async (e) => {
         e.preventDefault();
         setIsLoading(true);
         try {
-            // Hits your backend RoomController.create endpoint
-            // This endpoint creates the room and returns the room object with its ID
-            const { data } = await api.post('/rooms', { name: roomName });
-
-            // Redirect to the editor with the new unique room ID
+            const { data } = await api.post('/rooms', { name: roomName, password: roomPassword });
+            sessionStorage.setItem(`room_${data.id}_password`, roomPassword);
             navigate(`/editor/${data.id}`);
         } catch (err) {
-            console.error(err);
-            alert(err.response?.data?.error || "Error creating room. Please try again.");
+            alert(err.response?.data?.error || 'Failed to create room');
         } finally {
             setIsLoading(false);
+            setShowCreateModal(false);
+            setRoomName('');
+            setRoomPassword('');
+        }
+    };
+
+    const handleJoinRoom = async (roomId, password) => {
+        try {
+            await api.post('/rooms/join', { roomId, password });
+            sessionStorage.setItem(`room_${roomId}_password`, password);
+            navigate(`/editor/${roomId}`);
+        } catch (err) {
+            alert(err.response?.data?.error || 'Failed to join room');
         }
     };
 
     return (
-        <div className="h-screen w-full bg-editor flex items-center justify-center text-white p-4">
-            <div className="bg-sidebar p-8 rounded-lg border border-white/10 w-full max-w-md shadow-2xl">
-                <div className="text-center mb-8">
-                    <h1 className="text-3xl font-bold text-white mb-2">Create a Workspace</h1>
-                    <p className="text-gray-400 text-sm">Give your room a name to start coding together</p>
-                </div>
-
-                <form onSubmit={handleCreateRoom} className="space-y-6">
-                    <div>
-                        <label className="block text-xs uppercase tracking-widest text-gray-500 font-bold mb-2">
-                            Room Name
-                        </label>
-                        <input
-                            type="text"
-                            placeholder="e.g. Portfolio Project, Bug Fix Session..."
-                            className="w-full p-3 bg-editor border border-white/10 rounded focus:border-accent outline-none transition-all"
-                            value={roomName}
-                            onChange={(e) => setRoomName(e.target.value)}
-                            required
-                        />
-                    </div>
-
-                    <button
-                        type="submit"
-                        disabled={isLoading}
-                        className={`w-full py-3 rounded font-bold transition-all flex items-center justify-center gap-2 ${isLoading
-                                ? 'bg-gray-600 cursor-not-allowed'
-                                : 'bg-accent hover:bg-blue-600 active:scale-95 text-white'
-                            }`}
-                    >
-                        {isLoading ? 'Creating Room...' : 'Start Coding'}
-                    </button>
-                </form>
-
-                <div className="mt-8 pt-6 border-t border-white/5">
-                    <p className="text-center text-xs text-gray-500 italic">
-                        Once created, you can invite others by sharing the URL.
-                    </p>
-                </div>
+        <div className="h-screen w-full bg-editor flex flex-col text-white">
+            <div className="bg-sidebar p-4 flex justify-between items-center border-b border-white/10">
+                <h1 className="text-2xl font-bold">ColabIDE</h1>
+                <button
+                    onClick={() => setShowCreateModal(true)}
+                    className="px-4 py-2 bg-accent rounded hover:bg-blue-600"
+                >
+                    New Workspace
+                </button>
             </div>
+            <div className="flex-1 p-6 overflow-y-auto">
+                <h2 className="text-xl mb-4">Active Workspaces</h2>
+                {rooms.length === 0 ? (
+                    <p className="text-gray-500">No active workspaces. Create one!</p>
+                ) : (
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                        {rooms.map(room => (
+                            <div key={room.id} className="bg-sidebar p-4 rounded border border-white/10">
+                                <h3 className="font-semibold">{room.name}</h3>
+                                <p className="text-sm text-gray-400">Room ID: {room.id.slice(0, 8)}...</p>
+                                <button
+                                    onClick={() => {
+                                        setSelectedRoom(room);
+                                        setShowJoinModal(true);
+                                    }}
+                                    className="mt-2 px-3 py-1 bg-accent rounded text-sm hover:bg-blue-600"
+                                >
+                                    Join
+                                </button>
+                            </div>
+                        ))}
+                    </div>
+                )}
+            </div>
+
+            {/* Create Modal */}
+            {showCreateModal && (
+                <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
+                    <div className="bg-sidebar rounded p-6 w-96">
+                        <h2 className="text-xl mb-4">Create Workspace</h2>
+                        <form onSubmit={handleCreateRoom}>
+                            <input
+                                type="text"
+                                placeholder="Room Name"
+                                className="w-full p-2 bg-editor border border-white/10 rounded mb-3"
+                                value={roomName}
+                                onChange={e => setRoomName(e.target.value)}
+                                required
+                            />
+                            <input
+                                type="password"
+                                placeholder="Room Password"
+                                className="w-full p-2 bg-editor border border-white/10 rounded mb-4"
+                                value={roomPassword}
+                                onChange={e => setRoomPassword(e.target.value)}
+                                required
+                            />
+                            <div className="flex justify-end gap-2">
+                                <button type="button" onClick={() => setShowCreateModal(false)} className="px-4 py-2 bg-gray-600 rounded">Cancel</button>
+                                <button type="submit" disabled={isLoading} className="px-4 py-2 bg-accent rounded">Create</button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            )}
+
+            {/* Join Modal */}
+            {showJoinModal && selectedRoom && (
+                <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
+                    <div className="bg-sidebar rounded p-6 w-96">
+                        <h2 className="text-xl mb-4">Join {selectedRoom.name}</h2>
+                        <form onSubmit={(e) => {
+                            e.preventDefault();
+                            const pwd = e.target.password.value;
+                            handleJoinRoom(selectedRoom.id, pwd);
+                        }}>
+                            <input
+                                type="password"
+                                name="password"
+                                placeholder="Room Password"
+                                className="w-full p-2 bg-editor border border-white/10 rounded mb-4"
+                                required
+                            />
+                            <div className="flex justify-end gap-2">
+                                <button type="button" onClick={() => setShowJoinModal(false)} className="px-4 py-2 bg-gray-600 rounded">Cancel</button>
+                                <button type="submit" className="px-4 py-2 bg-accent rounded">Join</button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            )}
         </div>
     );
 };

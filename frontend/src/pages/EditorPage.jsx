@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { useParams } from 'react-router-dom';
+import { useParams, useNavigate } from 'react-router-dom';   // <-- added useNavigate
 import Editor from '@monaco-editor/react';
 import { Save, Play, Code2, FileJson, Hash, Layout, Plus, Trash2, Edit3, Loader2, Files, MessageSquare, Users, Settings } from 'lucide-react';
 import { generateOutput } from '../utils/generateOutput';
@@ -10,7 +10,6 @@ import { MonacoBinding } from 'y-monaco';
 import * as awarenessProtocol from 'y-protocols/awareness';
 
 // Utility to generate a consistent HEX color based on a username string
-// Hex is preferred for y-monaco to ensure background-color inheritance works flawlessly
 const stringToHexColor = (str) => {
     let hash = 0;
     for (let i = 0; i < str.length; i++) {
@@ -20,19 +19,15 @@ const stringToHexColor = (str) => {
     return '#' + '00000'.substring(0, 6 - c.length) + c;
 };
 
-// --- MainLayout Component (Consolidated to ensure reliable resolution) ---
+// --- MainLayout Component (unchanged) ---
 const MainLayout = ({ children, sidebarPanels = {}, activeUserCount = 0 }) => {
     const [activeTab, setActiveTab] = useState('files');
-
     return (
         <div className="flex h-screen w-screen bg-[#1e1e1e] text-gray-300 font-sans">
-            {/* 1. Activity Bar (Slim Left) */}
             <div className="w-12 bg-[#333333] flex flex-col items-center py-4 space-y-6 border-r border-white/10 z-20">
                 <button onClick={() => setActiveTab('files')} title="Files" className="w-full flex justify-center outline-none">
                     <Files className={`cursor-pointer transition-colors ${activeTab === 'files' ? 'text-white' : 'text-gray-500 hover:text-gray-300'}`} />
                 </button>
-
-                {/* Users Icon with Active Count Badge */}
                 <div className="relative w-full flex justify-center">
                     <button onClick={() => setActiveTab('users')} title="Active Users" className="outline-none">
                         <Users className={`cursor-pointer transition-colors ${activeTab === 'users' ? 'text-white' : 'text-gray-500 hover:text-gray-300'}`} />
@@ -43,19 +38,14 @@ const MainLayout = ({ children, sidebarPanels = {}, activeUserCount = 0 }) => {
                         </div>
                     )}
                 </div>
-
                 <button onClick={() => setActiveTab('chat')} title="Chat" className="w-full flex justify-center outline-none">
                     <MessageSquare className={`cursor-pointer transition-colors ${activeTab === 'chat' ? 'text-white' : 'text-gray-500 hover:text-gray-300'}`} />
                 </button>
-
                 <div className="flex-grow"></div>
-
                 <button title="Settings" className="w-full flex justify-center outline-none">
                     <Settings className="text-gray-500 cursor-pointer mb-2 hover:text-gray-300 transition-colors" />
                 </button>
             </div>
-
-            {/* 2. Side Pane (Dynamic Content) */}
             <div className="w-64 bg-[#252526] border-r border-white/10 flex flex-col z-10">
                 <div className="flex-grow overflow-hidden">
                     {sidebarPanels[activeTab] || (
@@ -65,8 +55,6 @@ const MainLayout = ({ children, sidebarPanels = {}, activeUserCount = 0 }) => {
                     )}
                 </div>
             </div>
-
-            {/* 3. Main Editor Area */}
             <div className="flex-grow flex flex-col overflow-hidden relative">
                 {children}
             </div>
@@ -77,6 +65,7 @@ const MainLayout = ({ children, sidebarPanels = {}, activeUserCount = 0 }) => {
 // --- Main EditorPage Component ---
 const EditorPage = () => {
     const { roomId } = useParams();
+    const navigate = useNavigate();               // <-- added navigate
     const [files, setFiles] = useState([]);
     const [activeFileId, setActiveFileId] = useState(null);
     const [srcDoc, setSrcDoc] = useState('');
@@ -99,13 +88,20 @@ const EditorPage = () => {
 
     const activeFile = files.find(f => f.id === activeFileId);
 
-    // Keep ref updated to avoid stale closures
     useEffect(() => {
         filesRef.current = files;
     }, [files]);
 
-    // --- 1. FULL STATE SYNC & SOCKET INITIALIZATION ---
+    // --- 1. SOCKET & YJS SYNC LOGIC (UPDATED with password) ---
     useEffect(() => {
+        // Retrieve password from sessionStorage (set during join/create)
+        const roomPassword = sessionStorage.getItem(`room_${roomId}_password`);
+        if (!roomPassword) {
+            alert('No password found for this room. Redirecting to lobby...');
+            navigate('/lobby');
+            return;
+        }
+
         const userStr = localStorage.getItem('user');
         const user = userStr ? JSON.parse(userStr) : {};
         const username = user.username || 'Anonymous';
@@ -114,9 +110,17 @@ const EditorPage = () => {
             socket.connect();
         }
 
-        socket.emit('join-room', { roomId, username });
+        // Listen for authentication errors from server
+        const handleJoinError = (error) => {
+            alert(error.error);
+            navigate('/lobby');
+        };
+        socket.on('join-error', handleJoinError);
 
-        // --- A. Setup Local User Awareness ---
+        // Send join event with password
+        socket.emit('join-room', { roomId, username, roomPassword });
+
+        // --- Setup Local User Awareness ---
         const userColor = stringToHexColor(username);
         awarenessRef.current.setLocalStateField('user', {
             name: username,
@@ -126,12 +130,9 @@ const EditorPage = () => {
         const handleAwarenessChange = ({ added, updated, removed }) => {
             const states = Array.from(awarenessRef.current.getStates().values());
             const users = states.map(state => state.user).filter(Boolean);
-
-            // Deduplicate users by name for the UI sidebar
             const uniqueUsers = Array.from(new Map(users.map(u => [u.name, u])).values());
             setActiveUsers(uniqueUsers);
 
-            // Broadcast awareness changes to the room
             const changedClients = added.concat(updated, removed);
             const update = awarenessProtocol.encodeAwarenessUpdate(awarenessRef.current, changedClients);
             socket.emit('awareness-update', { roomId, update: Array.from(update) });
@@ -150,7 +151,6 @@ const EditorPage = () => {
 
         const handleRemoteUpdate = (data) => {
             try {
-                // 1. Send full state to newly joined peers
                 if (data.requestSync) {
                     const fullState = Y.encodeStateAsUpdate(yDocRef.current);
                     socket.emit('yjs-update', {
@@ -161,12 +161,9 @@ const EditorPage = () => {
                     return;
                 }
 
-                // 2. Apply incoming state updates
                 if (data.roomId === roomId && data.update) {
                     const uint8Update = new Uint8Array(data.update);
-                    // Using 'remote' origin stops the local observer from echoing this back
                     Y.applyUpdate(yDocRef.current, uint8Update, 'remote');
-
                     if (data.isFullState) {
                         setIsSynced(true);
                     }
@@ -177,7 +174,6 @@ const EditorPage = () => {
         };
 
         const handleLocalUpdate = (update, origin) => {
-            // Broadcast local changes safely
             if (origin !== 'remote') {
                 socket.emit('yjs-update', {
                     roomId,
@@ -190,28 +186,26 @@ const EditorPage = () => {
         socket.on('awareness-update', handleRemoteAwareness);
         yDocRef.current.on('update', handleLocalUpdate);
 
-        // Ask existing peers for the full document state
         socket.emit('yjs-update', { roomId, requestSync: true });
 
-        // Fallback: If alone in the room, assume sync is complete
         const syncTimeout = setTimeout(() => {
             setIsSynced(true);
         }, 1500);
 
         return () => {
+            socket.off('join-error', handleJoinError);
             socket.off('yjs-update', handleRemoteUpdate);
             socket.off('awareness-update', handleRemoteAwareness);
             yDocRef.current.off('update', handleLocalUpdate);
             awarenessRef.current.off('change', handleAwarenessChange);
             clearTimeout(syncTimeout);
         };
-    }, [roomId]);
+    }, [roomId, navigate]);
 
-    // --- 2. BINDING & MODEL MANAGEMENT ---
+    // --- 2. BINDING & MODEL MANAGEMENT (unchanged) ---
     const handleEditorDidMount = (editor) => {
         if (!activeFileId || !isSynced) return;
 
-        // Cleanup any lingering binding
         if (bindingRef.current) {
             bindingRef.current.destroy();
             bindingRef.current = null;
@@ -220,8 +214,6 @@ const EditorPage = () => {
         const fileIdStr = activeFileId.toString();
         const yText = yDocRef.current.getText(fileIdStr);
 
-        // Seed DB content ONLY if it's our first time looking at this file 
-        // AND the collaborative text is completely empty.
         if (!seededFiles.current.has(fileIdStr)) {
             const currentFile = filesRef.current.find(f => f.id === activeFileId);
             if (yText.toString() === '' && currentFile?.content) {
@@ -230,16 +222,14 @@ const EditorPage = () => {
             seededFiles.current.add(fileIdStr);
         }
 
-        // Bind the Yjs shared text AND Awareness to this specific editor model instance
         bindingRef.current = new MonacoBinding(
             yText,
             editor.getModel(),
             new Set([editor]),
-            awarenessRef.current // Crucial: Enables remote cursors
+            awarenessRef.current
         );
     };
 
-    // Cleanup binding strictly when unmounting or switching files
     useEffect(() => {
         return () => {
             if (bindingRef.current) {
@@ -249,7 +239,7 @@ const EditorPage = () => {
         };
     }, [activeFileId]);
 
-    // --- 3. DATA FETCHING & FILE OPS ---
+    // --- 3. DATA FETCHING & FILE OPS (unchanged) ---
     const loadProject = async () => {
         try {
             const { data } = await api.get(`/projects/room/${roomId}`);
@@ -343,7 +333,7 @@ const EditorPage = () => {
         return <Plus size={14} className="text-gray-400" />;
     };
 
-    // --- SIDEBAR PANELS ---
+    // --- SIDEBAR PANELS (unchanged) ---
     const filesPanel = (
         <div className="flex flex-col h-full bg-[#252526]" onClick={() => setMenuPos(null)}>
             <div className="p-4 border-b border-white/5 flex justify-between items-center">
@@ -404,13 +394,8 @@ const EditorPage = () => {
 
     return (
         <MainLayout sidebarPanels={{ files: filesPanel, users: usersPanel }} activeUserCount={activeUsers.length}>
-
-            {/* CSS Injection to Guarantee y-monaco cursors are correctly styled and visible */}
             <style>{`
-                .yRemoteSelection {
-                    background-color: inherit;
-                    opacity: 0.4;
-                }
+                .yRemoteSelection { background-color: inherit; opacity: 0.4; }
                 .yRemoteSelectionHead {
                     position: absolute;
                     border-left: 2px solid;
@@ -418,7 +403,6 @@ const EditorPage = () => {
                     box-sizing: border-box;
                     z-index: 10;
                 }
-                /* Cursors should show the name of that specific user */
                 .yRemoteSelectionHead::after {
                     content: attr(data-user);
                     position: absolute;
@@ -438,7 +422,6 @@ const EditorPage = () => {
                     box-shadow: 0 2px 4px rgba(0,0,0,0.3);
                 }
             `}</style>
-
             <div className="flex flex-col h-full bg-[#1e1e1e]" onClick={() => setMenuPos(null)}>
                 <div className="flex bg-[#1e1e1e] border-b border-white/10 items-center px-2 z-10">
                     <div className="flex flex-grow overflow-x-auto no-scrollbar">
@@ -458,7 +441,6 @@ const EditorPage = () => {
                         <button onClick={() => setShowPreview(!showPreview)} className="p-2 text-gray-400 hover:text-white"><Layout size={16} /></button>
                     </div>
                 </div>
-
                 <div className="flex flex-grow overflow-hidden">
                     <div className={`${showPreview ? 'w-1/2' : 'w-full'} h-full border-r border-white/10 relative`}>
                         {!isSynced ? (
@@ -479,7 +461,7 @@ const EditorPage = () => {
                                     minimap: { enabled: false },
                                     automaticLayout: true,
                                     wordWrap: 'on',
-                                    padding: { top: 24 } // Extra padding so cursor names don't get cut off on line 1
+                                    padding: { top: 24 }
                                 }}
                             />
                         ) : <div className="flex items-center justify-center h-full text-gray-700 italic">Select a file...</div>}

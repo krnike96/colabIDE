@@ -1,22 +1,33 @@
 import pino from 'pino';
+import RoomService from '../services/RoomService.js';
+
 const logger = pino({ transport: { target: 'pino-pretty' } });
 
 export const setupSockets = (io) => {
   io.on('connection', (socket) => {
     logger.info(`User connected: ${socket.id}`);
 
-    socket.on('join-room', ({ roomId, username }) => {
-      socket.join(roomId);
-      logger.info(`User ${username} joined room: ${roomId}`);
-      socket.to(roomId).emit('user-joined', { username, socketId: socket.id });
+    socket.on('join-room', async ({ roomId, username, roomPassword }) => {
+      try {
+        const isValid = await RoomService.validateRoomPassword(roomId, roomPassword);
+        if (!isValid) {
+          socket.emit('join-error', { error: 'Invalid room password' });
+          return;
+        }
+        socket.join(roomId);
+        logger.info(`User ${username} joined room: ${roomId}`);
+        socket.to(roomId).emit('user-joined', { username, socketId: socket.id });
+      } catch (error) {
+        socket.emit('join-error', { error: error.message });
+      }
     });
 
-    // Yjs Document Sync Protocol: Broadcast binary updates and sync flags
+    // Yjs Document Sync Protocol
     socket.on('yjs-update', (data) => {
       socket.to(data.roomId).emit('yjs-update', data);
     });
 
-    // Yjs Awareness Protocol: Broadcast cursor and presence updates
+    // Yjs Awareness Protocol (cursors)
     socket.on('awareness-update', (data) => {
       socket.to(data.roomId).emit('awareness-update', data);
     });

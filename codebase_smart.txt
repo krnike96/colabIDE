@@ -2629,9 +2629,8 @@ export default MainLayout;
 
 import React, { useState, useEffect, useRef } from 'react';
 import { useParams } from 'react-router-dom';
-import MainLayout from '../components/MainLayout';
 import Editor from '@monaco-editor/react';
-import { Save, Play, Code2, FileJson, Hash, Layout, Plus, Trash2, Edit3, Loader2 } from 'lucide-react';
+import { Save, Play, Code2, FileJson, Hash, Layout, Plus, Trash2, Edit3, Loader2, Files, MessageSquare, Users, Settings } from 'lucide-react';
 import { generateOutput } from '../utils/generateOutput';
 import api from '../api';
 import { socket } from '../socket';
@@ -2639,16 +2638,72 @@ import * as Y from 'yjs';
 import { MonacoBinding } from 'y-monaco';
 import * as awarenessProtocol from 'y-protocols/awareness';
 
-// Utility to generate a consistent color based on a username string
-const stringToColor = (str) => {
+// Utility to generate a consistent HEX color based on a username string
+// Hex is preferred for y-monaco to ensure background-color inheritance works flawlessly
+const stringToHexColor = (str) => {
     let hash = 0;
     for (let i = 0; i < str.length; i++) {
         hash = str.charCodeAt(i) + ((hash << 5) - hash);
     }
-    const hue = Math.abs(hash % 360);
-    return `hsl(${hue}, 80%, 60%)`;
+    const c = (hash & 0x00FFFFFF).toString(16).toUpperCase();
+    return '#' + '00000'.substring(0, 6 - c.length) + c;
 };
 
+// --- MainLayout Component (Consolidated to ensure reliable resolution) ---
+const MainLayout = ({ children, sidebarPanels = {}, activeUserCount = 0 }) => {
+    const [activeTab, setActiveTab] = useState('files');
+
+    return (
+        <div className="flex h-screen w-screen bg-[#1e1e1e] text-gray-300 font-sans">
+            {/* 1. Activity Bar (Slim Left) */}
+            <div className="w-12 bg-[#333333] flex flex-col items-center py-4 space-y-6 border-r border-white/10 z-20">
+                <button onClick={() => setActiveTab('files')} title="Files" className="w-full flex justify-center outline-none">
+                    <Files className={`cursor-pointer transition-colors ${activeTab === 'files' ? 'text-white' : 'text-gray-500 hover:text-gray-300'}`} />
+                </button>
+
+                {/* Users Icon with Active Count Badge */}
+                <div className="relative w-full flex justify-center">
+                    <button onClick={() => setActiveTab('users')} title="Active Users" className="outline-none">
+                        <Users className={`cursor-pointer transition-colors ${activeTab === 'users' ? 'text-white' : 'text-gray-500 hover:text-gray-300'}`} />
+                    </button>
+                    {activeUserCount > 0 && (
+                        <div className="absolute top-0 right-1 bg-blue-500 text-white text-[9px] font-bold px-1.5 py-0.5 rounded-full transform translate-x-1/2 -translate-y-1/2 pointer-events-none shadow-md">
+                            {activeUserCount}
+                        </div>
+                    )}
+                </div>
+
+                <button onClick={() => setActiveTab('chat')} title="Chat" className="w-full flex justify-center outline-none">
+                    <MessageSquare className={`cursor-pointer transition-colors ${activeTab === 'chat' ? 'text-white' : 'text-gray-500 hover:text-gray-300'}`} />
+                </button>
+
+                <div className="flex-grow"></div>
+
+                <button title="Settings" className="w-full flex justify-center outline-none">
+                    <Settings className="text-gray-500 cursor-pointer mb-2 hover:text-gray-300 transition-colors" />
+                </button>
+            </div>
+
+            {/* 2. Side Pane (Dynamic Content) */}
+            <div className="w-64 bg-[#252526] border-r border-white/10 flex flex-col z-10">
+                <div className="flex-grow overflow-hidden">
+                    {sidebarPanels[activeTab] || (
+                        <div className="p-4 text-sm text-gray-500 italic">
+                            {activeTab.charAt(0).toUpperCase() + activeTab.slice(1)} coming soon...
+                        </div>
+                    )}
+                </div>
+            </div>
+
+            {/* 3. Main Editor Area */}
+            <div className="flex-grow flex flex-col overflow-hidden relative">
+                {children}
+            </div>
+        </div>
+    );
+};
+
+// --- Main EditorPage Component ---
 const EditorPage = () => {
     const { roomId } = useParams();
     const [files, setFiles] = useState([]);
@@ -2667,19 +2722,18 @@ const EditorPage = () => {
     // PERSISTENT REFS
     const yDocRef = useRef(new Y.Doc());
     const awarenessRef = useRef(new awarenessProtocol.Awareness(yDocRef.current));
-    const editorRef = useRef(null);
     const bindingRef = useRef(null);
     const seededFiles = useRef(new Set());
     const filesRef = useRef(files);
 
     const activeFile = files.find(f => f.id === activeFileId);
 
-    // Keep ref updated to avoid stale closures in timeouts
+    // Keep ref updated to avoid stale closures
     useEffect(() => {
         filesRef.current = files;
     }, [files]);
 
-    // --- 1. FULL STATE SYNC & AWARENESS INITIALIZATION ---
+    // --- 1. FULL STATE SYNC & SOCKET INITIALIZATION ---
     useEffect(() => {
         const userStr = localStorage.getItem('user');
         const user = userStr ? JSON.parse(userStr) : {};
@@ -2692,7 +2746,7 @@ const EditorPage = () => {
         socket.emit('join-room', { roomId, username });
 
         // --- A. Setup Local User Awareness ---
-        const userColor = stringToColor(username);
+        const userColor = stringToHexColor(username);
         awarenessRef.current.setLocalStateField('user', {
             name: username,
             color: userColor
@@ -2701,7 +2755,7 @@ const EditorPage = () => {
         const handleAwarenessChange = ({ added, updated, removed }) => {
             const states = Array.from(awarenessRef.current.getStates().values());
             const users = states.map(state => state.user).filter(Boolean);
-            
+
             // Deduplicate users by name for the UI sidebar
             const uniqueUsers = Array.from(new Map(users.map(u => [u.name, u])).values());
             setActiveUsers(uniqueUsers);
@@ -2723,9 +2777,9 @@ const EditorPage = () => {
             }
         };
 
-        // --- B. Setup Document Sync ---
         const handleRemoteUpdate = (data) => {
             try {
+                // 1. Send full state to newly joined peers
                 if (data.requestSync) {
                     const fullState = Y.encodeStateAsUpdate(yDocRef.current);
                     socket.emit('yjs-update', {
@@ -2736,11 +2790,15 @@ const EditorPage = () => {
                     return;
                 }
 
-                const update = data.update || data;
-                if (update) {
-                    const uint8Update = new Uint8Array(update);
+                // 2. Apply incoming state updates
+                if (data.roomId === roomId && data.update) {
+                    const uint8Update = new Uint8Array(data.update);
+                    // Using 'remote' origin stops the local observer from echoing this back
                     Y.applyUpdate(yDocRef.current, uint8Update, 'remote');
-                    if (data.isFullState) setIsSynced(true);
+
+                    if (data.isFullState) {
+                        setIsSynced(true);
+                    }
                 }
             } catch (err) {
                 console.error("Yjs Sync Error:", err);
@@ -2748,8 +2806,12 @@ const EditorPage = () => {
         };
 
         const handleLocalUpdate = (update, origin) => {
+            // Broadcast local changes safely
             if (origin !== 'remote') {
-                socket.emit('yjs-update', { roomId, update: Array.from(update) });
+                socket.emit('yjs-update', {
+                    roomId,
+                    update: Array.from(update)
+                });
             }
         };
 
@@ -2757,11 +2819,13 @@ const EditorPage = () => {
         socket.on('awareness-update', handleRemoteAwareness);
         yDocRef.current.on('update', handleLocalUpdate);
 
-        // Request initial states
+        // Ask existing peers for the full document state
         socket.emit('yjs-update', { roomId, requestSync: true });
 
         // Fallback: If alone in the room, assume sync is complete
-        const syncTimeout = setTimeout(() => setIsSynced(true), 1500);
+        const syncTimeout = setTimeout(() => {
+            setIsSynced(true);
+        }, 1500);
 
         return () => {
             socket.off('yjs-update', handleRemoteUpdate);
@@ -2773,65 +2837,63 @@ const EditorPage = () => {
     }, [roomId]);
 
     // --- 2. BINDING & MODEL MANAGEMENT ---
-    const bindEditorToYjs = (fileId) => {
-        if (!editorRef.current || !fileId || !isSynced) return;
+    const handleEditorDidMount = (editor) => {
+        if (!activeFileId || !isSynced) return;
 
+        // Cleanup any lingering binding
         if (bindingRef.current) {
             bindingRef.current.destroy();
             bindingRef.current = null;
         }
 
-        const fileIdStr = fileId.toString();
+        const fileIdStr = activeFileId.toString();
         const yText = yDocRef.current.getText(fileIdStr);
 
-        setTimeout(() => {
-            if (!editorRef.current) return;
-            const model = editorRef.current.getModel();
-            if (!model) return;
-
-            if (!seededFiles.current.has(fileIdStr)) {
-                const currentFile = filesRef.current.find(f => f.id === fileId);
-                if (yText.toString() === '' && currentFile?.content) {
-                    yText.insert(0, currentFile.content);
-                }
-                seededFiles.current.add(fileIdStr);
+        // Seed DB content ONLY if it's our first time looking at this file 
+        // AND the collaborative text is completely empty.
+        if (!seededFiles.current.has(fileIdStr)) {
+            const currentFile = filesRef.current.find(f => f.id === activeFileId);
+            if (yText.toString() === '' && currentFile?.content) {
+                yText.insert(0, currentFile.content);
             }
+            seededFiles.current.add(fileIdStr);
+        }
 
-            // Bind the Yjs shared text AND Awareness to this editor model
-            bindingRef.current = new MonacoBinding(
-                yText,
-                model,
-                new Set([editorRef.current]),
-                awarenessRef.current // Crucial: Enables the remote cursors
-            );
-        }, 50);
+        // Bind the Yjs shared text AND Awareness to this specific editor model instance
+        bindingRef.current = new MonacoBinding(
+            yText,
+            editor.getModel(),
+            new Set([editor]),
+            awarenessRef.current // Crucial: Enables remote cursors
+        );
     };
 
-    const handleEditorDidMount = (editor) => {
-        editorRef.current = editor;
-        bindEditorToYjs(activeFileId);
-    };
-
+    // Cleanup binding strictly when unmounting or switching files
     useEffect(() => {
-        bindEditorToYjs(activeFileId);
         return () => {
             if (bindingRef.current) {
                 bindingRef.current.destroy();
                 bindingRef.current = null;
             }
         };
-    }, [activeFileId, isSynced]);
+    }, [activeFileId]);
 
     // --- 3. DATA FETCHING & FILE OPS ---
     const loadProject = async () => {
         try {
             const { data } = await api.get(`/projects/room/${roomId}`);
             setFiles(data);
-            if (data.length > 0 && !activeFileId) setActiveFileId(data[0].id);
-        } catch (err) { console.error("Load error:", err); }
+            if (data.length > 0 && !activeFileId) {
+                setActiveFileId(data[0].id);
+            }
+        } catch (err) {
+            console.error("Load error:", err);
+        }
     };
 
-    useEffect(() => { loadProject(); }, [roomId]);
+    useEffect(() => {
+        loadProject();
+    }, [roomId]);
 
     const saveProject = async () => {
         if (!activeFileId) return;
@@ -2839,7 +2901,9 @@ const EditorPage = () => {
             const content = yDocRef.current.getText(activeFileId.toString()).toString();
             await api.put(`/projects/file/${activeFileId}`, { content });
             setFiles(prev => prev.map(f => f.id === activeFileId ? { ...f, content } : f));
-        } catch (err) { console.error("Save error"); }
+        } catch (err) {
+            console.error("Save error");
+        }
     };
 
     const runCode = () => {
@@ -2848,13 +2912,18 @@ const EditorPage = () => {
             const f = files.find(file => file.name.toLowerCase().endsWith(ext));
             return f ? yDocRef.current.getText(f.id.toString()).toString() : '';
         };
-        setSrcDoc(generateOutput(getC('.html'), getC('.css'), getC('.js')));
+        const html = getC('.html');
+        const css = getC('.css');
+        const js = getC('.js');
+        setSrcDoc(generateOutput(html, css, js));
         setExecutionKey(prev => prev + 1);
     };
 
     useEffect(() => {
         const onMsg = (e) => {
-            if (e.data.type === 'CONSOLE_LOG') setLogs(prev => [...prev, e.data.payload.join(' ')]);
+            if (e.data.type === 'CONSOLE_LOG') {
+                setLogs(prev => [...prev, e.data.payload.join(' ')]);
+            }
         };
         window.addEventListener('message', onMsg);
         return () => window.removeEventListener('message', onMsg);
@@ -2866,7 +2935,12 @@ const EditorPage = () => {
         const ext = name.split('.').pop();
         const langMap = { js: 'javascript', html: 'html', css: 'css' };
         try {
-            const { data } = await api.post('/files', { name, content: '', language: langMap[ext] || 'javascript', roomId });
+            const { data } = await api.post('/files', {
+                name,
+                content: '',
+                language: langMap[ext] || 'javascript',
+                roomId
+            });
             setFiles(prev => [...prev, data]);
             setActiveFileId(data.id);
         } catch (err) { console.error("Create error"); }
@@ -2891,7 +2965,6 @@ const EditorPage = () => {
         } catch (err) { console.error("Delete error"); }
     };
 
-    // --- SIDEBAR PANELS ---
     const getFileIcon = (name) => {
         if (name.endsWith('.html')) return <Code2 size={14} className="text-orange-500" />;
         if (name.endsWith('.css')) return <Hash size={14} className="text-blue-400" />;
@@ -2899,10 +2972,11 @@ const EditorPage = () => {
         return <Plus size={14} className="text-gray-400" />;
     };
 
+    // --- SIDEBAR PANELS ---
     const filesPanel = (
-        <div className="flex flex-col h-full bg-[#1e1e1e]" onClick={() => setMenuPos(null)}>
+        <div className="flex flex-col h-full bg-[#252526]" onClick={() => setMenuPos(null)}>
             <div className="p-4 border-b border-white/5 flex justify-between items-center">
-                <span className="text-[10px] font-bold text-gray-500 uppercase tracking-widest">Explorer</span>
+                <span className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Explorer</span>
                 <button onClick={createFile} className="p-1 hover:bg-white/10 rounded transition-colors text-gray-400"><Plus size={14} /></button>
             </div>
             <div className="flex-grow overflow-y-auto">
@@ -2915,7 +2989,7 @@ const EditorPage = () => {
                             setSelectedFileId(file.id);
                         }}
                         onClick={() => setActiveFileId(file.id)}
-                        className={`px-4 py-2 text-sm flex items-center gap-2 cursor-pointer transition-colors ${activeFileId === file.id ? 'bg-accent/20 text-white' : 'text-gray-400 hover:bg-white/5'}`}
+                        className={`px-4 py-2 text-sm flex items-center gap-2 cursor-pointer transition-colors ${activeFileId === file.id ? 'bg-accent/20 text-white border-l-2 border-accent' : 'text-gray-400 hover:bg-white/5'}`}
                     >
                         {getFileIcon(file.name)}
                         <span className="truncate">{file.name}</span>
@@ -2936,15 +3010,15 @@ const EditorPage = () => {
     );
 
     const usersPanel = (
-        <div className="flex flex-col h-full bg-[#1e1e1e]">
+        <div className="flex flex-col h-full bg-[#252526]">
             <div className="p-4 border-b border-white/5 flex justify-between items-center">
-                <span className="text-[10px] font-bold text-gray-500 uppercase tracking-widest">Active Users ({activeUsers.length})</span>
+                <span className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Active Users ({activeUsers.length})</span>
             </div>
             <div className="flex-grow overflow-y-auto p-2 space-y-1">
                 {activeUsers.map((u, i) => (
                     <div key={i} className="flex items-center gap-3 p-2 rounded hover:bg-white/5 transition-colors">
-                        <div 
-                            className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold text-white border border-white/10 shadow-sm"
+                        <div
+                            className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold text-white shadow-sm"
                             style={{ backgroundColor: u.color }}
                         >
                             {u.name.charAt(0).toUpperCase()}
@@ -2958,31 +3032,62 @@ const EditorPage = () => {
     );
 
     return (
-        <MainLayout sidebarPanels={{ files: filesPanel, users: usersPanel }}>
+        <MainLayout sidebarPanels={{ files: filesPanel, users: usersPanel }} activeUserCount={activeUsers.length}>
+
+            {/* CSS Injection to Guarantee y-monaco cursors are correctly styled and visible */}
+            <style>{`
+                .yRemoteSelection {
+                    background-color: inherit;
+                    opacity: 0.4;
+                }
+                .yRemoteSelectionHead {
+                    position: absolute;
+                    border-left: 2px solid;
+                    height: 100%;
+                    box-sizing: border-box;
+                    z-index: 10;
+                }
+                /* Cursors should show the name of that specific user */
+                .yRemoteSelectionHead::after {
+                    content: attr(data-user);
+                    position: absolute;
+                    top: -20px;
+                    left: -2px;
+                    color: white;
+                    font-size: 11px;
+                    font-family: ui-sans-serif, system-ui, sans-serif;
+                    font-weight: 600;
+                    padding: 2px 6px;
+                    border-radius: 4px;
+                    border-bottom-left-radius: 0;
+                    white-space: nowrap;
+                    pointer-events: none;
+                    z-index: 50;
+                    background-color: inherit;
+                    box-shadow: 0 2px 4px rgba(0,0,0,0.3);
+                }
+            `}</style>
+
             <div className="flex flex-col h-full bg-[#1e1e1e]" onClick={() => setMenuPos(null)}>
-                
-                {/* File Tabs Header */}
-                <div className="flex bg-[#1e1e1e] border-b border-white/10 items-center px-2">
+                <div className="flex bg-[#1e1e1e] border-b border-white/10 items-center px-2 z-10">
                     <div className="flex flex-grow overflow-x-auto no-scrollbar">
                         {files.map(file => (
-                            <button 
-                                key={file.id} 
-                                onClick={() => setActiveFileId(file.id)} 
+                            <button
+                                key={file.id}
+                                onClick={() => setActiveFileId(file.id)}
                                 className={`px-4 py-2.5 text-xs border-r border-white/5 whitespace-nowrap transition-colors ${activeFileId === file.id ? 'bg-[#1e1e1e] text-white border-t-2 border-accent' : 'text-gray-500 hover:bg-white/5'}`}
                             >
                                 {file.name}
                             </button>
                         ))}
                     </div>
-
-                    <div className="flex gap-1 px-2">
+                    <div className="flex gap-1 ml-auto px-2">
                         <button onClick={saveProject} className="p-2 text-accent hover:text-white" title="Save All"><Save size={16} /></button>
                         <button onClick={runCode} className="p-2 text-green-500 hover:text-white" title="Run Code"><Play size={16} /></button>
-                        <button onClick={() => setShowPreview(!showPreview)} className="p-2 text-gray-400 hover:text-white" title="Toggle Preview"><Layout size={16} /></button>
+                        <button onClick={() => setShowPreview(!showPreview)} className="p-2 text-gray-400 hover:text-white"><Layout size={16} /></button>
                     </div>
                 </div>
 
-                {/* Editor & Preview Workspace */}
                 <div className="flex flex-grow overflow-hidden">
                     <div className={`${showPreview ? 'w-1/2' : 'w-full'} h-full border-r border-white/10 relative`}>
                         {!isSynced ? (
@@ -2992,7 +3097,7 @@ const EditorPage = () => {
                             </div>
                         ) : activeFile ? (
                             <Editor
-                                key={activeFile.id} 
+                                key={activeFile.id}
                                 height="100%"
                                 theme="vs-dark"
                                 path={activeFile.id.toString()}
@@ -3003,7 +3108,7 @@ const EditorPage = () => {
                                     minimap: { enabled: false },
                                     automaticLayout: true,
                                     wordWrap: 'on',
-                                    padding: { top: 20 } // Creates room for cursors on the very first line
+                                    padding: { top: 24 } // Extra padding so cursor names don't get cut off on line 1
                                 }}
                             />
                         ) : <div className="flex items-center justify-center h-full text-gray-700 italic">Select a file...</div>}
