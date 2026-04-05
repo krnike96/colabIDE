@@ -1143,12 +1143,18 @@ export const setupSockets = (io) => {
       socket.to(data.roomId).emit('awareness-update', data);
     });
 
+    // Chat messages
     socket.on('send-message', ({ roomId, message, sender }) => {
       io.to(roomId).emit('receive-message', {
         text: message,
         sender,
         timestamp: new Date()
       });
+    });
+
+    // File operation sync (create, rename, delete)
+    socket.on('file-operation', (data) => {
+      socket.to(data.roomId).emit('file-operation', data);
     });
 
     socket.on('disconnect', () => {
@@ -2891,6 +2897,31 @@ const EditorPage = () => {
         filesRef.current = files;
     }, [files]);
 
+    // --- Load chat messages from localStorage on mount ---
+    useEffect(() => {
+        const stored = localStorage.getItem(`chat_${roomId}`);
+        if (stored) {
+            try {
+                const parsed = JSON.parse(stored);
+                if (Array.isArray(parsed)) {
+                    setChatMessages(parsed);
+                }
+            } catch (e) { console.error("Failed to load chat history"); }
+        }
+    }, [roomId]);
+
+    // --- Save chat messages to localStorage whenever they change ---
+    useEffect(() => {
+        if (chatMessages.length > 0) {
+            // Optional: limit to last 200 messages to avoid huge storage
+            const toStore = chatMessages.slice(-200);
+            localStorage.setItem(`chat_${roomId}`, JSON.stringify(toStore));
+        } else {
+            // If empty, you might want to remove the key, but we'll keep as is
+            localStorage.removeItem(`chat_${roomId}`);
+        }
+    }, [chatMessages, roomId]);
+
     const addChatMessage = useCallback((message) => {
         setChatMessages(prev => [...prev, {
             id: Date.now() + Math.random(),
@@ -2900,6 +2931,12 @@ const EditorPage = () => {
         }]);
     }, []);
 
+    // --- Helper to update files state (used by socket listener) ---
+    const updateFiles = useCallback((newFiles) => {
+        setFiles(newFiles);
+    }, []);
+
+    // --- Socket & Yjs sync (unchanged) ---
     useEffect(() => {
         const roomPassword = sessionStorage.getItem(`room_${roomId}_password`);
         if (!roomPassword) {
@@ -2987,6 +3024,39 @@ const EditorPage = () => {
         };
     }, [roomId, navigate, addChatMessage]);
 
+    // --- File operation sync listener ---
+    useEffect(() => {
+        const handleFileOperation = (data) => {
+            if (data.roomId !== roomId) return;
+
+            switch (data.type) {
+                case 'create':
+                    setFiles(prev => [...prev, data.file]);
+                    break;
+                case 'rename':
+                    setFiles(prev => prev.map(f =>
+                        f.id === data.fileId ? { ...f, name: data.newName } : f
+                    ));
+                    break;
+                case 'delete':
+                    setFiles(prev => {
+                        const newFiles = prev.filter(f => f.id !== data.fileId);
+                        if (activeFileId === data.fileId) {
+                            setActiveFileId(newFiles[0]?.id || null);
+                        }
+                        return newFiles;
+                    });
+                    break;
+                default:
+                    break;
+            }
+        };
+
+        socket.on('file-operation', handleFileOperation);
+        return () => socket.off('file-operation', handleFileOperation);
+    }, [roomId, activeFileId]);
+
+    // --- Monaco binding (unchanged) ---
     const handleEditorDidMount = (editor) => {
         if (!activeFileId || !isSynced) return;
         if (bindingRef.current) bindingRef.current.destroy();
@@ -3004,6 +3074,7 @@ const EditorPage = () => {
         return () => { if (bindingRef.current) bindingRef.current.destroy(); };
     }, [activeFileId]);
 
+    // --- Data fetching ---
     const loadProject = async () => {
         try {
             const { data } = await api.get(`/projects/room/${roomId}`);
@@ -3014,6 +3085,7 @@ const EditorPage = () => {
 
     useEffect(() => { loadProject(); }, [roomId]);
 
+    // --- File operations with socket broadcast ---
     const saveProject = async () => {
         if (!activeFileId) return;
         try {
@@ -3023,6 +3095,46 @@ const EditorPage = () => {
         } catch (err) { console.error("Save error"); }
     };
 
+    const createFile = async () => {
+        const name = prompt("Filename:");
+        if (!name) return;
+        const ext = name.split('.').pop();
+        const langMap = { js: 'javascript', html: 'html', css: 'css' };
+        try {
+            const { data } = await api.post('/files', {
+                name,
+                content: '',
+                language: langMap[ext] || 'javascript',
+                roomId
+            });
+            setFiles(prev => [...prev, data]);
+            setActiveFileId(data.id);
+            socket.emit('file-operation', { roomId, type: 'create', file: data });
+        } catch (err) { console.error("Create error"); alert(err.response?.data?.error || "Create failed"); }
+    };
+
+    const renameFile = async (id, oldName) => {
+        const newName = prompt("Rename to:", oldName);
+        if (!newName || newName === oldName) return;
+        try {
+            await api.patch(`/projects/file/${id}/rename`, { name: newName });
+            setFiles(prev => prev.map(f => f.id === id ? { ...f, name: newName } : f));
+            socket.emit('file-operation', { roomId, type: 'rename', fileId: id, newName });
+        } catch (err) { console.error("Rename failed"); alert(err.response?.data?.error || "Rename failed"); }
+    };
+
+    const deleteFile = async (id) => {
+        if (!window.confirm("Delete file?")) return;
+        try {
+            await api.delete(`/files/${id}`);
+            const remaining = files.filter(f => f.id !== id);
+            setFiles(remaining);
+            if (activeFileId === id) setActiveFileId(remaining[0]?.id || null);
+            socket.emit('file-operation', { roomId, type: 'delete', fileId: id });
+        } catch (err) { console.error("Delete error"); alert("Delete failed"); }
+    };
+
+    // --- Preview and code execution ---
     const runCode = () => {
         setLogs([]);
         const getC = (ext) => {
@@ -3039,37 +3151,6 @@ const EditorPage = () => {
         return () => window.removeEventListener('message', onMsg);
     }, []);
 
-    const createFile = async () => {
-        const name = prompt("Filename:");
-        if (!name) return;
-        const ext = name.split('.').pop();
-        const langMap = { js: 'javascript', html: 'html', css: 'css' };
-        try {
-            const { data } = await api.post('/files', { name, content: '', language: langMap[ext] || 'javascript', roomId });
-            setFiles(prev => [...prev, data]);
-            setActiveFileId(data.id);
-        } catch (err) { console.error("Create error"); }
-    };
-
-    const renameFile = async (id, oldName) => {
-        const newName = prompt("Rename to:", oldName);
-        if (!newName || newName === oldName) return;
-        try {
-            await api.patch(`/projects/file/${id}/rename`, { name: newName });
-            setFiles(prev => prev.map(f => f.id === id ? { ...f, name: newName } : f));
-        } catch (err) { console.error("Rename failed"); }
-    };
-
-    const deleteFile = async (id) => {
-        if (!window.confirm("Delete file?")) return;
-        try {
-            await api.delete(`/files/${id}`);
-            const remaining = files.filter(f => f.id !== id);
-            setFiles(remaining);
-            if (activeFileId === id) setActiveFileId(remaining[0]?.id || null);
-        } catch (err) { console.error("Delete error"); }
-    };
-
     const getFileIcon = (name) => {
         if (name.endsWith('.html')) return <Code2 size={14} className="text-orange-500" />;
         if (name.endsWith('.css')) return <Hash size={14} className="text-blue-400" />;
@@ -3077,6 +3158,7 @@ const EditorPage = () => {
         return <Plus size={14} className="text-gray-400" />;
     };
 
+    // --- Sidebar panels (unchanged) ---
     const filesPanel = (
         <div className="flex flex-col h-full bg-[#252526]" onClick={() => setMenuPos(null)}>
             <div className="p-4 border-b border-white/5 flex justify-between items-center">
