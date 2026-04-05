@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';   // <-- added useNavigate
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { useParams, useNavigate } from 'react-router-dom';
 import Editor from '@monaco-editor/react';
 import { Copy, Check, Save, Play, Code2, FileJson, Hash, Layout, Plus, Trash2, Edit3, Loader2, Files, MessageSquare, Users, Settings } from 'lucide-react';
 import { generateOutput } from '../utils/generateOutput';
@@ -8,8 +8,8 @@ import { socket } from '../socket';
 import * as Y from 'yjs';
 import { MonacoBinding } from 'y-monaco';
 import * as awarenessProtocol from 'y-protocols/awareness';
+import ChatPanel from '../components/ChatPanel';
 
-// Utility to generate a consistent HEX color based on a username string
 const stringToHexColor = (str) => {
     let hash = 0;
     for (let i = 0; i < str.length; i++) {
@@ -19,7 +19,6 @@ const stringToHexColor = (str) => {
     return '#' + '00000'.substring(0, 6 - c.length) + c;
 };
 
-// --- MainLayout Component (unchanged) ---
 const MainLayout = ({ children, sidebarPanels = {}, activeUserCount = 0 }) => {
     const [activeTab, setActiveTab] = useState('files');
     return (
@@ -62,10 +61,9 @@ const MainLayout = ({ children, sidebarPanels = {}, activeUserCount = 0 }) => {
     );
 };
 
-// --- Main EditorPage Component ---
 const EditorPage = () => {
     const { roomId } = useParams();
-    const navigate = useNavigate();               // <-- added navigate
+    const navigate = useNavigate();
     const [files, setFiles] = useState([]);
     const [activeFileId, setActiveFileId] = useState(null);
     const [srcDoc, setSrcDoc] = useState('');
@@ -77,8 +75,11 @@ const EditorPage = () => {
     const [menuPos, setMenuPos] = useState(null);
     const [selectedFileId, setSelectedFileId] = useState(null);
     const [linkCopied, setLinkCopied] = useState(false);
+    const [chatMessages, setChatMessages] = useState([]);
 
-    // PERSISTENT REFS
+    const userStr = localStorage.getItem('user');
+    const currentUsername = userStr ? JSON.parse(userStr).username : 'Anonymous';
+
     const yDocRef = useRef(new Y.Doc());
     const awarenessRef = useRef(new awarenessProtocol.Awareness(yDocRef.current));
     const bindingRef = useRef(null);
@@ -91,9 +92,16 @@ const EditorPage = () => {
         filesRef.current = files;
     }, [files]);
 
-    // --- 1. SOCKET & YJS SYNC LOGIC (UPDATED with password) ---
+    const addChatMessage = useCallback((message) => {
+        setChatMessages(prev => [...prev, {
+            id: Date.now() + Math.random(),
+            sender: message.sender,
+            text: message.text,
+            timestamp: message.timestamp
+        }]);
+    }, []);
+
     useEffect(() => {
-        // Retrieve password from sessionStorage (set during join/create)
         const roomPassword = sessionStorage.getItem(`room_${roomId}_password`);
         if (!roomPassword) {
             alert('No password found for this room. Redirecting to lobby...');
@@ -101,85 +109,65 @@ const EditorPage = () => {
             return;
         }
 
-        const userStr = localStorage.getItem('user');
-        const user = userStr ? JSON.parse(userStr) : {};
+        const user = JSON.parse(localStorage.getItem('user') || '{}');
         const username = user.username || 'Anonymous';
 
-        if (!socket.connected) {
-            socket.connect();
-        }
+        if (!socket.connected) socket.connect();
 
-        // Listen for authentication errors from server
         const handleJoinError = (error) => {
             alert(error.error);
             navigate('/lobby');
         };
         socket.on('join-error', handleJoinError);
 
-        // Send join event with password
         socket.emit('join-room', { roomId, username, roomPassword });
 
-        // --- Setup Local User Awareness ---
         const userColor = stringToHexColor(username);
-        awarenessRef.current.setLocalStateField('user', {
-            name: username,
-            color: userColor
-        });
+        awarenessRef.current.setLocalStateField('user', { name: username, color: userColor });
 
         const handleAwarenessChange = ({ added, updated, removed }) => {
             const states = Array.from(awarenessRef.current.getStates().values());
             const users = states.map(state => state.user).filter(Boolean);
             const uniqueUsers = Array.from(new Map(users.map(u => [u.name, u])).values());
             setActiveUsers(uniqueUsers);
-
             const changedClients = added.concat(updated, removed);
             const update = awarenessProtocol.encodeAwarenessUpdate(awarenessRef.current, changedClients);
             socket.emit('awareness-update', { roomId, update: Array.from(update) });
         };
-
         awarenessRef.current.on('change', handleAwarenessChange);
 
         const handleRemoteAwareness = (data) => {
             try {
                 const uint8Update = new Uint8Array(data.update || data);
                 awarenessProtocol.applyAwarenessUpdate(awarenessRef.current, uint8Update, 'remote');
-            } catch (err) {
-                console.error("Awareness Sync Error:", err);
-            }
+            } catch (err) { console.error("Awareness Sync Error:", err); }
         };
 
         const handleRemoteUpdate = (data) => {
             try {
                 if (data.requestSync) {
                     const fullState = Y.encodeStateAsUpdate(yDocRef.current);
-                    socket.emit('yjs-update', {
-                        roomId,
-                        update: Array.from(fullState),
-                        isFullState: true
-                    });
+                    socket.emit('yjs-update', { roomId, update: Array.from(fullState), isFullState: true });
                     return;
                 }
-
                 if (data.roomId === roomId && data.update) {
                     const uint8Update = new Uint8Array(data.update);
                     Y.applyUpdate(yDocRef.current, uint8Update, 'remote');
-                    if (data.isFullState) {
-                        setIsSynced(true);
-                    }
+                    if (data.isFullState) setIsSynced(true);
                 }
-            } catch (err) {
-                console.error("Yjs Sync Error:", err);
-            }
+            } catch (err) { console.error("Yjs Sync Error:", err); }
         };
 
         const handleLocalUpdate = (update, origin) => {
             if (origin !== 'remote') {
-                socket.emit('yjs-update', {
-                    roomId,
-                    update: Array.from(update)
-                });
+                socket.emit('yjs-update', { roomId, update: Array.from(update) });
             }
         };
+
+        const handleReceiveMessage = (data) => {
+            addChatMessage(data);
+        };
+        socket.on('receive-message', handleReceiveMessage);
 
         socket.on('yjs-update', handleRemoteUpdate);
         socket.on('awareness-update', handleRemoteAwareness);
@@ -187,73 +175,45 @@ const EditorPage = () => {
 
         socket.emit('yjs-update', { roomId, requestSync: true });
 
-        const syncTimeout = setTimeout(() => {
-            setIsSynced(true);
-        }, 1500);
+        const syncTimeout = setTimeout(() => setIsSynced(true), 1500);
 
         return () => {
             socket.off('join-error', handleJoinError);
+            socket.off('receive-message', handleReceiveMessage);
             socket.off('yjs-update', handleRemoteUpdate);
             socket.off('awareness-update', handleRemoteAwareness);
             yDocRef.current.off('update', handleLocalUpdate);
             awarenessRef.current.off('change', handleAwarenessChange);
             clearTimeout(syncTimeout);
         };
-    }, [roomId, navigate]);
+    }, [roomId, navigate, addChatMessage]);
 
-    // --- 2. BINDING & MODEL MANAGEMENT (unchanged) ---
     const handleEditorDidMount = (editor) => {
         if (!activeFileId || !isSynced) return;
-
-        if (bindingRef.current) {
-            bindingRef.current.destroy();
-            bindingRef.current = null;
-        }
-
+        if (bindingRef.current) bindingRef.current.destroy();
         const fileIdStr = activeFileId.toString();
         const yText = yDocRef.current.getText(fileIdStr);
-
         if (!seededFiles.current.has(fileIdStr)) {
             const currentFile = filesRef.current.find(f => f.id === activeFileId);
-            if (yText.toString() === '' && currentFile?.content) {
-                yText.insert(0, currentFile.content);
-            }
+            if (yText.toString() === '' && currentFile?.content) yText.insert(0, currentFile.content);
             seededFiles.current.add(fileIdStr);
         }
-
-        bindingRef.current = new MonacoBinding(
-            yText,
-            editor.getModel(),
-            new Set([editor]),
-            awarenessRef.current
-        );
+        bindingRef.current = new MonacoBinding(yText, editor.getModel(), new Set([editor]), awarenessRef.current);
     };
 
     useEffect(() => {
-        return () => {
-            if (bindingRef.current) {
-                bindingRef.current.destroy();
-                bindingRef.current = null;
-            }
-        };
+        return () => { if (bindingRef.current) bindingRef.current.destroy(); };
     }, [activeFileId]);
 
-    // --- 3. DATA FETCHING & FILE OPS (unchanged) ---
     const loadProject = async () => {
         try {
             const { data } = await api.get(`/projects/room/${roomId}`);
             setFiles(data);
-            if (data.length > 0 && !activeFileId) {
-                setActiveFileId(data[0].id);
-            }
-        } catch (err) {
-            console.error("Load error:", err);
-        }
+            if (data.length > 0 && !activeFileId) setActiveFileId(data[0].id);
+        } catch (err) { console.error("Load error:", err); }
     };
 
-    useEffect(() => {
-        loadProject();
-    }, [roomId]);
+    useEffect(() => { loadProject(); }, [roomId]);
 
     const saveProject = async () => {
         if (!activeFileId) return;
@@ -261,9 +221,7 @@ const EditorPage = () => {
             const content = yDocRef.current.getText(activeFileId.toString()).toString();
             await api.put(`/projects/file/${activeFileId}`, { content });
             setFiles(prev => prev.map(f => f.id === activeFileId ? { ...f, content } : f));
-        } catch (err) {
-            console.error("Save error");
-        }
+        } catch (err) { console.error("Save error"); }
     };
 
     const runCode = () => {
@@ -272,19 +230,12 @@ const EditorPage = () => {
             const f = files.find(file => file.name.toLowerCase().endsWith(ext));
             return f ? yDocRef.current.getText(f.id.toString()).toString() : '';
         };
-        const html = getC('.html');
-        const css = getC('.css');
-        const js = getC('.js');
-        setSrcDoc(generateOutput(html, css, js));
+        setSrcDoc(generateOutput(getC('.html'), getC('.css'), getC('.js')));
         setExecutionKey(prev => prev + 1);
     };
 
     useEffect(() => {
-        const onMsg = (e) => {
-            if (e.data.type === 'CONSOLE_LOG') {
-                setLogs(prev => [...prev, e.data.payload.join(' ')]);
-            }
-        };
+        const onMsg = (e) => { if (e.data.type === 'CONSOLE_LOG') setLogs(prev => [...prev, e.data.payload.join(' ')]); };
         window.addEventListener('message', onMsg);
         return () => window.removeEventListener('message', onMsg);
     }, []);
@@ -295,12 +246,7 @@ const EditorPage = () => {
         const ext = name.split('.').pop();
         const langMap = { js: 'javascript', html: 'html', css: 'css' };
         try {
-            const { data } = await api.post('/files', {
-                name,
-                content: '',
-                language: langMap[ext] || 'javascript',
-                roomId
-            });
+            const { data } = await api.post('/files', { name, content: '', language: langMap[ext] || 'javascript', roomId });
             setFiles(prev => [...prev, data]);
             setActiveFileId(data.id);
         } catch (err) { console.error("Create error"); }
@@ -332,22 +278,17 @@ const EditorPage = () => {
         return <Plus size={14} className="text-gray-400" />;
     };
 
-    // --- SIDEBAR PANELS (unchanged) ---
     const filesPanel = (
         <div className="flex flex-col h-full bg-[#252526]" onClick={() => setMenuPos(null)}>
             <div className="p-4 border-b border-white/5 flex justify-between items-center">
                 <span className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Explorer</span>
-                <button onClick={createFile} className="p-1 hover:bg-white/10 rounded transition-colors text-gray-400"><Plus size={14} /></button>
+                <button onClick={createFile} className="p-1 hover:bg-white/10 rounded"><Plus size={14} /></button>
             </div>
             <div className="flex-grow overflow-y-auto">
                 {files.map(file => (
                     <div
                         key={file.id}
-                        onContextMenu={(e) => {
-                            e.preventDefault();
-                            setMenuPos({ x: e.pageX, y: e.pageY });
-                            setSelectedFileId(file.id);
-                        }}
+                        onContextMenu={(e) => { e.preventDefault(); setMenuPos({ x: e.pageX, y: e.pageY }); setSelectedFileId(file.id); }}
                         onClick={() => setActiveFileId(file.id)}
                         className={`px-4 py-2 text-sm flex items-center gap-2 cursor-pointer transition-colors ${activeFileId === file.id ? 'bg-accent/20 text-white border-l-2 border-accent' : 'text-gray-400 hover:bg-white/5'}`}
                     >
@@ -358,7 +299,7 @@ const EditorPage = () => {
             </div>
             {menuPos && (
                 <div className="fixed bg-[#1e1e1e] border border-white/10 shadow-2xl py-1 z-50 w-40 rounded" style={{ top: menuPos.y, left: menuPos.x }}>
-                    <button onClick={() => renameFile(selectedFileId, files.find(f => f.id === selectedFileId)?.name)} className="w-full text-left px-3 py-2 text-xs text-gray-300 hover:bg-accent hover:text-white flex items-center gap-2">
+                    <button onClick={() => renameFile(selectedFileId, files.find(f => f.id === selectedFileId)?.name)} className="w-full text-left px-3 py-2 text-xs hover:bg-accent hover:text-white flex items-center gap-2">
                         <Edit3 size={12} /> Rename
                     </button>
                     <button onClick={() => deleteFile(selectedFileId)} className="w-full text-left px-3 py-2 text-xs text-red-400 hover:bg-red-500 hover:text-white flex items-center gap-2">
@@ -371,24 +312,32 @@ const EditorPage = () => {
 
     const usersPanel = (
         <div className="flex flex-col h-full bg-[#252526]">
-            <div className="p-4 border-b border-white/5 flex justify-between items-center">
+            <div className="p-4 border-b border-white/5">
                 <span className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Active Users ({activeUsers.length})</span>
             </div>
             <div className="flex-grow overflow-y-auto p-2 space-y-1">
                 {activeUsers.map((u, i) => (
-                    <div key={i} className="flex items-center gap-3 p-2 rounded hover:bg-white/5 transition-colors">
-                        <div
-                            className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold text-white shadow-sm"
-                            style={{ backgroundColor: u.color }}
-                        >
+                    <div key={i} className="flex items-center gap-3 p-2 rounded hover:bg-white/5">
+                        <div className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold text-white shadow-sm" style={{ backgroundColor: u.color }}>
                             {u.name.charAt(0).toUpperCase()}
                         </div>
                         <span className="text-sm font-medium text-gray-300 truncate">{u.name}</span>
-                        <div className="w-2 h-2 rounded-full bg-green-500 ml-auto shadow-[0_0_8px_rgba(34,197,94,0.6)]"></div>
+                        <div className="w-2 h-2 rounded-full bg-green-500 ml-auto"></div>
                     </div>
                 ))}
             </div>
         </div>
+    );
+
+    const chatPanel = (
+        <ChatPanel
+            roomId={roomId}
+            currentUser={currentUsername}
+            messages={chatMessages}
+            onSendMessage={(messageData) => {
+                socket.emit('send-message', messageData);
+            }}
+        />
     );
 
     const copyRoomLink = () => {
@@ -399,7 +348,7 @@ const EditorPage = () => {
     };
 
     return (
-        <MainLayout sidebarPanels={{ files: filesPanel, users: usersPanel }} activeUserCount={activeUsers.length}>
+        <MainLayout sidebarPanels={{ files: filesPanel, users: usersPanel, chat: chatPanel }} activeUserCount={activeUsers.length}>
             <style>{`
                 .yRemoteSelection { background-color: inherit; opacity: 0.4; }
                 .yRemoteSelectionHead {
@@ -432,11 +381,7 @@ const EditorPage = () => {
                 <div className="flex bg-[#1e1e1e] border-b border-white/10 items-center px-2 z-10">
                     <div className="flex flex-grow overflow-x-auto no-scrollbar">
                         {files.map(file => (
-                            <button
-                                key={file.id}
-                                onClick={() => setActiveFileId(file.id)}
-                                className={`px-4 py-2.5 text-xs border-r border-white/5 whitespace-nowrap transition-colors ${activeFileId === file.id ? 'bg-[#1e1e1e] text-white border-t-2 border-accent' : 'text-gray-500 hover:bg-white/5'}`}
-                            >
+                            <button key={file.id} onClick={() => setActiveFileId(file.id)} className={`px-4 py-2.5 text-xs border-r border-white/5 whitespace-nowrap transition-colors ${activeFileId === file.id ? 'bg-[#1e1e1e] text-white border-t-2 border-accent' : 'text-gray-500 hover:bg-white/5'}`}>
                                 {file.name}
                             </button>
                         ))}

@@ -59,6 +59,7 @@
         │   ├── main.jsx
         │   ├── pages
         │   │   ├── EditorPage.jsx
+        │   │   ├── JoinPage.jsx
         │   │   ├── Lobby.jsx
         │   │   ├── Login.jsx
         │   │   └── Signup.jsx
@@ -451,12 +452,21 @@ import RoomService from '../services/RoomService.js';
 class RoomController {
   async create(req, res) {
     try {
-      const { name } = req.body;
-      const adminId = req.user.id; // From authMiddleware
-      const room = await RoomService.createRoom(name, adminId);
+      const { name, password } = req.body;
+      const adminId = req.user.id;
+      const room = await RoomService.createRoom(name, adminId, password);
       res.status(201).json(room);
     } catch (error) {
       res.status(400).json({ error: error.message });
+    }
+  }
+
+  async getAllRooms(req, res) {
+    try {
+      const rooms = await RoomService.getAllRooms();
+      res.status(200).json(rooms);
+    } catch (error) {
+      res.status(500).json({ error: error.message });
     }
   }
 
@@ -464,6 +474,27 @@ class RoomController {
     try {
       const room = await RoomService.getRoomDetails(req.params.id);
       res.status(200).json(room);
+    } catch (error) {
+      res.status(404).json({ error: error.message });
+    }
+  }
+
+  async joinRoom(req, res) {
+    try {
+      const { roomId, password } = req.body;
+      const userId = req.user.id;
+      const participant = await RoomService.joinRoom(roomId, userId, password);
+      res.status(200).json({ message: 'Joined successfully', role: participant.role });
+    } catch (error) {
+      res.status(400).json({ error: error.message });
+    }
+  }
+
+  async getRoomJoinInfo(req, res) {
+    try {
+      const { roomId } = req.params;
+      const room = await RoomService.getRoomDetails(roomId);
+      res.status(200).json({ id: room.id, name: room.name });
     } catch (error) {
       res.status(404).json({ error: error.message });
     }
@@ -605,6 +636,10 @@ const Room = sequelize.define('Room', {
   adminId: {
     type: DataTypes.UUID,
     allowNull: false,
+  },
+  password: {
+    type: DataTypes.STRING,
+    allowNull: false,
   }
 });
 
@@ -691,6 +726,10 @@ class RoomRepository {
 
   async findById(id) {
     return await Room.findByPk(id);
+  }
+
+  async findAll() {
+    return await Room.findAll();
   }
 
   async update(id, updateData) {
@@ -784,9 +823,11 @@ import { protect } from '../middleware/authMiddleware.js';
 
 const router = express.Router();
 
-// All room routes require a valid token
 router.post('/', protect, (req, res) => RoomController.create(req, res));
+router.get('/', protect, (req, res) => RoomController.getAllRooms(req, res));
 router.get('/:id', protect, (req, res) => RoomController.getRoom(req, res));
+router.post('/join', protect, (req, res) => RoomController.joinRoom(req, res));
+router.get('/:roomId/join-info', protect, (req, res) => RoomController.getRoomJoinInfo(req, res));
 
 export default router;
 
@@ -997,19 +1038,23 @@ export default new FileService();
 
 import RoomRepository from '../repositories/RoomRepository.js';
 import { Participant } from '../models/index.js';
+import bcrypt from 'bcryptjs';
 
 class RoomService {
-  async createRoom(name, adminId) {
+  async createRoom(name, adminId, password) {
     if (!name) throw new Error('Room name is required');
     if (!adminId) throw new Error('Admin ID is required');
+    if (!password) throw new Error('Room password is required');
 
-    // 1. Create the room with the adminId
+    const salt = await bcrypt.genSalt(10);
+    const hashedPassword = await bcrypt.hash(password, salt);
+
     const room = await RoomRepository.create({
       name,
-      adminId // This fixes the NotNull violation
+      adminId,
+      password: hashedPassword
     });
 
-    // 2. Automatically add the creator as an 'ADMIN' participant
     await Participant.create({
       RoomId: room.id,
       UserId: adminId,
@@ -1025,17 +1070,37 @@ class RoomService {
     return room;
   }
 
-  async joinRoom(roomId, userId) {
-    // Check if already a participant
+  async getAllRooms() {
+    const rooms = await RoomRepository.findAll();
+    // Return only public info (hide password)
+    return rooms.map(room => ({
+      id: room.id,
+      name: room.name,
+      adminId: room.adminId
+    }));
+  }
+
+  async joinRoom(roomId, userId, password) {
+    const room = await RoomRepository.findById(roomId);
+    if (!room) throw new Error('Room not found');
+
+    const isValid = await bcrypt.compare(password, room.password);
+    if (!isValid) throw new Error('Invalid room password');
+
     const existing = await Participant.findOne({ where: { RoomId: roomId, UserId: userId } });
     if (existing) return existing;
 
-    // Join as VIEWER by default (Interface Segregation principle)
     return await Participant.create({
       UserId: userId,
       RoomId: roomId,
       role: 'VIEWER'
     });
+  }
+
+  async validateRoomPassword(roomId, password) {
+    const room = await RoomRepository.findById(roomId);
+    if (!room) throw new Error('Room not found');
+    return await bcrypt.compare(password, room.password);
   }
 }
 
@@ -1044,24 +1109,35 @@ export default new RoomService();
 --- File: backend\sockets\socketHandlers.js ---
 
 import pino from 'pino';
+import RoomService from '../services/RoomService.js';
+
 const logger = pino({ transport: { target: 'pino-pretty' } });
 
 export const setupSockets = (io) => {
   io.on('connection', (socket) => {
     logger.info(`User connected: ${socket.id}`);
 
-    socket.on('join-room', ({ roomId, username }) => {
-      socket.join(roomId);
-      logger.info(`User ${username} joined room: ${roomId}`);
-      socket.to(roomId).emit('user-joined', { username, socketId: socket.id });
+    socket.on('join-room', async ({ roomId, username, roomPassword }) => {
+      try {
+        const isValid = await RoomService.validateRoomPassword(roomId, roomPassword);
+        if (!isValid) {
+          socket.emit('join-error', { error: 'Invalid room password' });
+          return;
+        }
+        socket.join(roomId);
+        logger.info(`User ${username} joined room: ${roomId}`);
+        socket.to(roomId).emit('user-joined', { username, socketId: socket.id });
+      } catch (error) {
+        socket.emit('join-error', { error: error.message });
+      }
     });
 
-    // Yjs Document Sync Protocol: Broadcast binary updates and sync flags
+    // Yjs Document Sync Protocol
     socket.on('yjs-update', (data) => {
       socket.to(data.roomId).emit('yjs-update', data);
     });
 
-    // Yjs Awareness Protocol: Broadcast cursor and presence updates
+    // Yjs Awareness Protocol (cursors)
     socket.on('awareness-update', (data) => {
       socket.to(data.roomId).emit('awareness-update', data);
     });
@@ -2155,7 +2231,7 @@ export default defineConfig([
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>frontend</title>
+    <title>ColabIDE</title>
   </head>
   <body>
     <div id="root"></div>
@@ -2487,6 +2563,7 @@ import Login from './pages/Login';
 import Signup from './pages/Signup';
 import Lobby from './pages/Lobby';
 import EditorPage from './pages/EditorPage';
+import JoinPage from './pages/JoinPage';
 
 function App() {
   return (
@@ -2495,6 +2572,7 @@ function App() {
         <Route path="/login" element={<Login />} />
         <Route path="/signup" element={<Signup />} />
         <Route path="/lobby" element={<Lobby />} />
+        <Route path="/join/:roomId" element={<JoinPage />} />
         {/* We will protect this route later */}
         <Route path="/editor/:roomId" element={<EditorPage />} />
         <Route path="/" element={<Navigate to="/login" />} />
@@ -2628,9 +2706,9 @@ export default MainLayout;
 --- File: frontend\src\pages\EditorPage.jsx ---
 
 import React, { useState, useEffect, useRef } from 'react';
-import { useParams } from 'react-router-dom';
+import { useParams, useNavigate } from 'react-router-dom';   // <-- added useNavigate
 import Editor from '@monaco-editor/react';
-import { Save, Play, Code2, FileJson, Hash, Layout, Plus, Trash2, Edit3, Loader2, Files, MessageSquare, Users, Settings } from 'lucide-react';
+import { Copy, Check, Save, Play, Code2, FileJson, Hash, Layout, Plus, Trash2, Edit3, Loader2, Files, MessageSquare, Users, Settings } from 'lucide-react';
 import { generateOutput } from '../utils/generateOutput';
 import api from '../api';
 import { socket } from '../socket';
@@ -2639,7 +2717,6 @@ import { MonacoBinding } from 'y-monaco';
 import * as awarenessProtocol from 'y-protocols/awareness';
 
 // Utility to generate a consistent HEX color based on a username string
-// Hex is preferred for y-monaco to ensure background-color inheritance works flawlessly
 const stringToHexColor = (str) => {
     let hash = 0;
     for (let i = 0; i < str.length; i++) {
@@ -2649,19 +2726,15 @@ const stringToHexColor = (str) => {
     return '#' + '00000'.substring(0, 6 - c.length) + c;
 };
 
-// --- MainLayout Component (Consolidated to ensure reliable resolution) ---
+// --- MainLayout Component (unchanged) ---
 const MainLayout = ({ children, sidebarPanels = {}, activeUserCount = 0 }) => {
     const [activeTab, setActiveTab] = useState('files');
-
     return (
         <div className="flex h-screen w-screen bg-[#1e1e1e] text-gray-300 font-sans">
-            {/* 1. Activity Bar (Slim Left) */}
             <div className="w-12 bg-[#333333] flex flex-col items-center py-4 space-y-6 border-r border-white/10 z-20">
                 <button onClick={() => setActiveTab('files')} title="Files" className="w-full flex justify-center outline-none">
                     <Files className={`cursor-pointer transition-colors ${activeTab === 'files' ? 'text-white' : 'text-gray-500 hover:text-gray-300'}`} />
                 </button>
-
-                {/* Users Icon with Active Count Badge */}
                 <div className="relative w-full flex justify-center">
                     <button onClick={() => setActiveTab('users')} title="Active Users" className="outline-none">
                         <Users className={`cursor-pointer transition-colors ${activeTab === 'users' ? 'text-white' : 'text-gray-500 hover:text-gray-300'}`} />
@@ -2672,19 +2745,14 @@ const MainLayout = ({ children, sidebarPanels = {}, activeUserCount = 0 }) => {
                         </div>
                     )}
                 </div>
-
                 <button onClick={() => setActiveTab('chat')} title="Chat" className="w-full flex justify-center outline-none">
                     <MessageSquare className={`cursor-pointer transition-colors ${activeTab === 'chat' ? 'text-white' : 'text-gray-500 hover:text-gray-300'}`} />
                 </button>
-
                 <div className="flex-grow"></div>
-
                 <button title="Settings" className="w-full flex justify-center outline-none">
                     <Settings className="text-gray-500 cursor-pointer mb-2 hover:text-gray-300 transition-colors" />
                 </button>
             </div>
-
-            {/* 2. Side Pane (Dynamic Content) */}
             <div className="w-64 bg-[#252526] border-r border-white/10 flex flex-col z-10">
                 <div className="flex-grow overflow-hidden">
                     {sidebarPanels[activeTab] || (
@@ -2694,8 +2762,6 @@ const MainLayout = ({ children, sidebarPanels = {}, activeUserCount = 0 }) => {
                     )}
                 </div>
             </div>
-
-            {/* 3. Main Editor Area */}
             <div className="flex-grow flex flex-col overflow-hidden relative">
                 {children}
             </div>
@@ -2706,18 +2772,18 @@ const MainLayout = ({ children, sidebarPanels = {}, activeUserCount = 0 }) => {
 // --- Main EditorPage Component ---
 const EditorPage = () => {
     const { roomId } = useParams();
+    const navigate = useNavigate();               // <-- added navigate
     const [files, setFiles] = useState([]);
     const [activeFileId, setActiveFileId] = useState(null);
     const [srcDoc, setSrcDoc] = useState('');
     const [logs, setLogs] = useState([]);
     const [showPreview, setShowPreview] = useState(true);
     const [executionKey, setExecutionKey] = useState(0);
-
     const [isSynced, setIsSynced] = useState(false);
     const [activeUsers, setActiveUsers] = useState([]);
-
     const [menuPos, setMenuPos] = useState(null);
     const [selectedFileId, setSelectedFileId] = useState(null);
+    const [linkCopied, setLinkCopied] = useState(false);
 
     // PERSISTENT REFS
     const yDocRef = useRef(new Y.Doc());
@@ -2728,13 +2794,20 @@ const EditorPage = () => {
 
     const activeFile = files.find(f => f.id === activeFileId);
 
-    // Keep ref updated to avoid stale closures
     useEffect(() => {
         filesRef.current = files;
     }, [files]);
 
-    // --- 1. FULL STATE SYNC & SOCKET INITIALIZATION ---
+    // --- 1. SOCKET & YJS SYNC LOGIC (UPDATED with password) ---
     useEffect(() => {
+        // Retrieve password from sessionStorage (set during join/create)
+        const roomPassword = sessionStorage.getItem(`room_${roomId}_password`);
+        if (!roomPassword) {
+            alert('No password found for this room. Redirecting to lobby...');
+            navigate('/lobby');
+            return;
+        }
+
         const userStr = localStorage.getItem('user');
         const user = userStr ? JSON.parse(userStr) : {};
         const username = user.username || 'Anonymous';
@@ -2743,9 +2816,17 @@ const EditorPage = () => {
             socket.connect();
         }
 
-        socket.emit('join-room', { roomId, username });
+        // Listen for authentication errors from server
+        const handleJoinError = (error) => {
+            alert(error.error);
+            navigate('/lobby');
+        };
+        socket.on('join-error', handleJoinError);
 
-        // --- A. Setup Local User Awareness ---
+        // Send join event with password
+        socket.emit('join-room', { roomId, username, roomPassword });
+
+        // --- Setup Local User Awareness ---
         const userColor = stringToHexColor(username);
         awarenessRef.current.setLocalStateField('user', {
             name: username,
@@ -2755,12 +2836,9 @@ const EditorPage = () => {
         const handleAwarenessChange = ({ added, updated, removed }) => {
             const states = Array.from(awarenessRef.current.getStates().values());
             const users = states.map(state => state.user).filter(Boolean);
-
-            // Deduplicate users by name for the UI sidebar
             const uniqueUsers = Array.from(new Map(users.map(u => [u.name, u])).values());
             setActiveUsers(uniqueUsers);
 
-            // Broadcast awareness changes to the room
             const changedClients = added.concat(updated, removed);
             const update = awarenessProtocol.encodeAwarenessUpdate(awarenessRef.current, changedClients);
             socket.emit('awareness-update', { roomId, update: Array.from(update) });
@@ -2779,7 +2857,6 @@ const EditorPage = () => {
 
         const handleRemoteUpdate = (data) => {
             try {
-                // 1. Send full state to newly joined peers
                 if (data.requestSync) {
                     const fullState = Y.encodeStateAsUpdate(yDocRef.current);
                     socket.emit('yjs-update', {
@@ -2790,12 +2867,9 @@ const EditorPage = () => {
                     return;
                 }
 
-                // 2. Apply incoming state updates
                 if (data.roomId === roomId && data.update) {
                     const uint8Update = new Uint8Array(data.update);
-                    // Using 'remote' origin stops the local observer from echoing this back
                     Y.applyUpdate(yDocRef.current, uint8Update, 'remote');
-
                     if (data.isFullState) {
                         setIsSynced(true);
                     }
@@ -2806,7 +2880,6 @@ const EditorPage = () => {
         };
 
         const handleLocalUpdate = (update, origin) => {
-            // Broadcast local changes safely
             if (origin !== 'remote') {
                 socket.emit('yjs-update', {
                     roomId,
@@ -2819,28 +2892,26 @@ const EditorPage = () => {
         socket.on('awareness-update', handleRemoteAwareness);
         yDocRef.current.on('update', handleLocalUpdate);
 
-        // Ask existing peers for the full document state
         socket.emit('yjs-update', { roomId, requestSync: true });
 
-        // Fallback: If alone in the room, assume sync is complete
         const syncTimeout = setTimeout(() => {
             setIsSynced(true);
         }, 1500);
 
         return () => {
+            socket.off('join-error', handleJoinError);
             socket.off('yjs-update', handleRemoteUpdate);
             socket.off('awareness-update', handleRemoteAwareness);
             yDocRef.current.off('update', handleLocalUpdate);
             awarenessRef.current.off('change', handleAwarenessChange);
             clearTimeout(syncTimeout);
         };
-    }, [roomId]);
+    }, [roomId, navigate]);
 
-    // --- 2. BINDING & MODEL MANAGEMENT ---
+    // --- 2. BINDING & MODEL MANAGEMENT (unchanged) ---
     const handleEditorDidMount = (editor) => {
         if (!activeFileId || !isSynced) return;
 
-        // Cleanup any lingering binding
         if (bindingRef.current) {
             bindingRef.current.destroy();
             bindingRef.current = null;
@@ -2849,8 +2920,6 @@ const EditorPage = () => {
         const fileIdStr = activeFileId.toString();
         const yText = yDocRef.current.getText(fileIdStr);
 
-        // Seed DB content ONLY if it's our first time looking at this file 
-        // AND the collaborative text is completely empty.
         if (!seededFiles.current.has(fileIdStr)) {
             const currentFile = filesRef.current.find(f => f.id === activeFileId);
             if (yText.toString() === '' && currentFile?.content) {
@@ -2859,16 +2928,14 @@ const EditorPage = () => {
             seededFiles.current.add(fileIdStr);
         }
 
-        // Bind the Yjs shared text AND Awareness to this specific editor model instance
         bindingRef.current = new MonacoBinding(
             yText,
             editor.getModel(),
             new Set([editor]),
-            awarenessRef.current // Crucial: Enables remote cursors
+            awarenessRef.current
         );
     };
 
-    // Cleanup binding strictly when unmounting or switching files
     useEffect(() => {
         return () => {
             if (bindingRef.current) {
@@ -2878,7 +2945,7 @@ const EditorPage = () => {
         };
     }, [activeFileId]);
 
-    // --- 3. DATA FETCHING & FILE OPS ---
+    // --- 3. DATA FETCHING & FILE OPS (unchanged) ---
     const loadProject = async () => {
         try {
             const { data } = await api.get(`/projects/room/${roomId}`);
@@ -2972,7 +3039,7 @@ const EditorPage = () => {
         return <Plus size={14} className="text-gray-400" />;
     };
 
-    // --- SIDEBAR PANELS ---
+    // --- SIDEBAR PANELS (unchanged) ---
     const filesPanel = (
         <div className="flex flex-col h-full bg-[#252526]" onClick={() => setMenuPos(null)}>
             <div className="p-4 border-b border-white/5 flex justify-between items-center">
@@ -3031,15 +3098,17 @@ const EditorPage = () => {
         </div>
     );
 
+    const copyRoomLink = () => {
+        const link = `${window.location.origin}/join/${roomId}`;
+        navigator.clipboard.writeText(link);
+        setLinkCopied(true);
+        setTimeout(() => setLinkCopied(false), 2000);
+    };
+
     return (
         <MainLayout sidebarPanels={{ files: filesPanel, users: usersPanel }} activeUserCount={activeUsers.length}>
-
-            {/* CSS Injection to Guarantee y-monaco cursors are correctly styled and visible */}
             <style>{`
-                .yRemoteSelection {
-                    background-color: inherit;
-                    opacity: 0.4;
-                }
+                .yRemoteSelection { background-color: inherit; opacity: 0.4; }
                 .yRemoteSelectionHead {
                     position: absolute;
                     border-left: 2px solid;
@@ -3047,7 +3116,6 @@ const EditorPage = () => {
                     box-sizing: border-box;
                     z-index: 10;
                 }
-                /* Cursors should show the name of that specific user */
                 .yRemoteSelectionHead::after {
                     content: attr(data-user);
                     position: absolute;
@@ -3067,7 +3135,6 @@ const EditorPage = () => {
                     box-shadow: 0 2px 4px rgba(0,0,0,0.3);
                 }
             `}</style>
-
             <div className="flex flex-col h-full bg-[#1e1e1e]" onClick={() => setMenuPos(null)}>
                 <div className="flex bg-[#1e1e1e] border-b border-white/10 items-center px-2 z-10">
                     <div className="flex flex-grow overflow-x-auto no-scrollbar">
@@ -3085,9 +3152,11 @@ const EditorPage = () => {
                         <button onClick={saveProject} className="p-2 text-accent hover:text-white" title="Save All"><Save size={16} /></button>
                         <button onClick={runCode} className="p-2 text-green-500 hover:text-white" title="Run Code"><Play size={16} /></button>
                         <button onClick={() => setShowPreview(!showPreview)} className="p-2 text-gray-400 hover:text-white"><Layout size={16} /></button>
+                        <button onClick={copyRoomLink} className="p-2 text-gray-400 hover:text-white" title="Copy invite link">
+                            {linkCopied ? <Check size={16} className="text-green-500" /> : <Copy size={16} />}
+                        </button>
                     </div>
                 </div>
-
                 <div className="flex flex-grow overflow-hidden">
                     <div className={`${showPreview ? 'w-1/2' : 'w-full'} h-full border-r border-white/10 relative`}>
                         {!isSynced ? (
@@ -3108,7 +3177,7 @@ const EditorPage = () => {
                                     minimap: { enabled: false },
                                     automaticLayout: true,
                                     wordWrap: 'on',
-                                    padding: { top: 24 } // Extra padding so cursor names don't get cut off on line 1
+                                    padding: { top: 24 }
                                 }}
                             />
                         ) : <div className="flex items-center justify-center h-full text-gray-700 italic">Select a file...</div>}
@@ -3133,76 +3202,332 @@ const EditorPage = () => {
 
 export default EditorPage;
 
+--- File: frontend\src\pages\JoinPage.jsx ---
+
+import React, { useState, useEffect } from 'react';
+import { useParams, useNavigate, Link } from 'react-router-dom';
+import api from '../api';
+import { Lock, ArrowLeft, Home } from 'lucide-react';
+
+const JoinPage = () => {
+    const { roomId } = useParams();
+    const navigate = useNavigate();
+    const [password, setPassword] = useState('');
+    const [roomInfo, setRoomInfo] = useState(null);
+    const [isLoading, setIsLoading] = useState(true);
+    const [isJoining, setIsJoining] = useState(false);
+    const [error, setError] = useState('');
+
+    // First, check if user is logged in
+    useEffect(() => {
+        const token = localStorage.getItem('token');
+        if (!token) {
+            // Store the intended destination and redirect to login
+            sessionStorage.setItem('redirectAfterLogin', `/join/${roomId}`);
+            navigate('/login');
+            return;
+        }
+
+        // Fetch room info (just name, existence) – no password needed yet
+        const fetchRoomInfo = async () => {
+            try {
+                const { data } = await api.get(`/rooms/${roomId}/join-info`);
+                setRoomInfo(data);
+            } catch (err) {
+                setError(err.response?.data?.error || 'Room not found or inactive');
+            } finally {
+                setIsLoading(false);
+            }
+        };
+
+        fetchRoomInfo();
+    }, [roomId, navigate]);
+
+    const handleSubmit = async (e) => {
+        e.preventDefault();
+        setIsJoining(true);
+        setError('');
+
+        try {
+            // Validate password and join
+            await api.post('/rooms/join', { roomId, password });
+            // Store password for socket connection
+            sessionStorage.setItem(`room_${roomId}_password`, password);
+            // Redirect to editor
+            navigate(`/editor/${roomId}`);
+        } catch (err) {
+            setError(err.response?.data?.error || 'Failed to join room. Please check the password.');
+            setIsJoining(false);
+        }
+    };
+
+    if (isLoading) {
+        return (
+            <div className="h-screen w-full bg-editor flex items-center justify-center">
+                <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-accent"></div>
+            </div>
+        );
+    }
+
+    if (error && !roomInfo) {
+        return (
+            <div className="h-screen w-full bg-editor flex items-center justify-center p-4">
+                <div className="bg-sidebar rounded-lg border border-white/10 p-8 max-w-md text-center">
+                    <Lock size={48} className="text-red-500 mx-auto mb-4" />
+                    <h2 className="text-xl font-bold text-white mb-2">Cannot Join Room</h2>
+                    <p className="text-gray-400 mb-6">{error}</p>
+                    <div className="flex gap-3 justify-center">
+                        <button onClick={() => navigate('/lobby')} className="px-5 py-2 bg-accent hover:bg-blue-600 rounded-lg transition-colors flex items-center gap-2">
+                            <Home size={18} />
+                            Go to Lobby
+                        </button>
+                        <button onClick={() => navigate(-1)} className="px-5 py-2 bg-white/5 hover:bg-white/10 rounded-lg transition-colors flex items-center gap-2">
+                            <ArrowLeft size={18} />
+                            Go Back
+                        </button>
+                    </div>
+                </div>
+            </div>
+        );
+    }
+
+    return (
+        <div className="h-screen w-full bg-editor flex items-center justify-center p-4">
+            <div className="bg-sidebar rounded-lg border border-white/10 w-full max-w-md shadow-2xl">
+                <div className="p-6 border-b border-white/10">
+                    <h2 className="text-2xl font-bold text-white text-center">Join Workspace</h2>
+                    <p className="text-gray-400 text-center mt-2">You've been invited to join</p>
+                </div>
+
+                <div className="p-6">
+                    <div className="bg-editor rounded-lg p-4 mb-6 border border-white/10">
+                        <p className="text-sm text-gray-400 mb-1">Room Name</p>
+                        <p className="text-white font-semibold text-lg">{roomInfo?.name}</p>
+                    </div>
+
+                    <form onSubmit={handleSubmit} className="space-y-4">
+                        <div>
+                            <label className="block text-xs uppercase tracking-widest text-gray-500 font-bold mb-2">
+                                Room Password
+                            </label>
+                            <input
+                                type="password"
+                                placeholder="Enter the room password"
+                                className="w-full p-3 bg-editor border border-white/10 rounded focus:border-accent outline-none transition-all text-white"
+                                value={password}
+                                onChange={(e) => setPassword(e.target.value)}
+                                required
+                                autoFocus
+                            />
+                        </div>
+
+                        {error && (
+                            <div className="bg-red-500/10 border border-red-500/50 rounded p-3 text-sm text-red-400">
+                                {error}
+                            </div>
+                        )}
+
+                        <button
+                            type="submit"
+                            disabled={isJoining}
+                            className={`w-full py-3 rounded font-bold transition-all flex items-center justify-center gap-2 ${isJoining
+                                    ? 'bg-gray-600 cursor-not-allowed'
+                                    : 'bg-accent hover:bg-blue-600 text-white'
+                                }`}
+                        >
+                            {isJoining ? 'Joining...' : 'Join Room'}
+                        </button>
+
+                        <button
+                            type="button"
+                            onClick={() => navigate('/lobby')}
+                            className="w-full py-2 text-gray-400 hover:text-white transition-colors text-sm"
+                        >
+                            Browse all workspaces
+                        </button>
+                    </form>
+                </div>
+            </div>
+        </div>
+    );
+};
+
+export default JoinPage;
+
 --- File: frontend\src\pages\Lobby.jsx ---
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import api from '../api';
+import { Copy, Check } from 'lucide-react';   // added icons
 
 const Lobby = () => {
+    const [rooms, setRooms] = useState([]);
+    const [showCreateModal, setShowCreateModal] = useState(false);
+    const [showJoinModal, setShowJoinModal] = useState(false);
+    const [selectedRoom, setSelectedRoom] = useState(null);
     const [roomName, setRoomName] = useState('');
+    const [roomPassword, setRoomPassword] = useState('');
     const [isLoading, setIsLoading] = useState(false);
+    const [copiedRoomId, setCopiedRoomId] = useState(null); // track which room was copied
     const navigate = useNavigate();
+
+    const fetchRooms = async () => {
+        try {
+            const { data } = await api.get('/rooms');
+            setRooms(data);
+        } catch (err) {
+            console.error('Failed to fetch rooms', err);
+        }
+    };
+
+    useEffect(() => {
+        fetchRooms();
+        const interval = setInterval(fetchRooms, 30000);
+        return () => clearInterval(interval);
+    }, []);
 
     const handleCreateRoom = async (e) => {
         e.preventDefault();
         setIsLoading(true);
         try {
-            // Hits your backend RoomController.create endpoint
-            // This endpoint creates the room and returns the room object with its ID
-            const { data } = await api.post('/rooms', { name: roomName });
-
-            // Redirect to the editor with the new unique room ID
+            const { data } = await api.post('/rooms', { name: roomName, password: roomPassword });
+            sessionStorage.setItem(`room_${data.id}_password`, roomPassword);
             navigate(`/editor/${data.id}`);
         } catch (err) {
-            console.error(err);
-            alert(err.response?.data?.error || "Error creating room. Please try again.");
+            alert(err.response?.data?.error || 'Failed to create room');
         } finally {
             setIsLoading(false);
+            setShowCreateModal(false);
+            setRoomName('');
+            setRoomPassword('');
         }
     };
 
+    const handleJoinRoom = async (roomId, password) => {
+        try {
+            await api.post('/rooms/join', { roomId, password });
+            sessionStorage.setItem(`room_${roomId}_password`, password);
+            navigate(`/editor/${roomId}`);
+        } catch (err) {
+            alert(err.response?.data?.error || 'Failed to join room');
+        }
+    };
+
+    const copyRoomLink = (roomId) => {
+        const link = `${window.location.origin}/join/${roomId}`;
+        navigator.clipboard.writeText(link);
+        setCopiedRoomId(roomId);
+        setTimeout(() => setCopiedRoomId(null), 2000);
+    };
+
     return (
-        <div className="h-screen w-full bg-editor flex items-center justify-center text-white p-4">
-            <div className="bg-sidebar p-8 rounded-lg border border-white/10 w-full max-w-md shadow-2xl">
-                <div className="text-center mb-8">
-                    <h1 className="text-3xl font-bold text-white mb-2">Create a Workspace</h1>
-                    <p className="text-gray-400 text-sm">Give your room a name to start coding together</p>
-                </div>
-
-                <form onSubmit={handleCreateRoom} className="space-y-6">
-                    <div>
-                        <label className="block text-xs uppercase tracking-widest text-gray-500 font-bold mb-2">
-                            Room Name
-                        </label>
-                        <input
-                            type="text"
-                            placeholder="e.g. Portfolio Project, Bug Fix Session..."
-                            className="w-full p-3 bg-editor border border-white/10 rounded focus:border-accent outline-none transition-all"
-                            value={roomName}
-                            onChange={(e) => setRoomName(e.target.value)}
-                            required
-                        />
-                    </div>
-
-                    <button
-                        type="submit"
-                        disabled={isLoading}
-                        className={`w-full py-3 rounded font-bold transition-all flex items-center justify-center gap-2 ${isLoading
-                                ? 'bg-gray-600 cursor-not-allowed'
-                                : 'bg-accent hover:bg-blue-600 active:scale-95 text-white'
-                            }`}
-                    >
-                        {isLoading ? 'Creating Room...' : 'Start Coding'}
-                    </button>
-                </form>
-
-                <div className="mt-8 pt-6 border-t border-white/5">
-                    <p className="text-center text-xs text-gray-500 italic">
-                        Once created, you can invite others by sharing the URL.
-                    </p>
-                </div>
+        <div className="h-screen w-full bg-editor flex flex-col text-white">
+            <div className="bg-sidebar p-4 flex justify-between items-center border-b border-white/10">
+                <h1 className="text-2xl font-bold">ColabIDE</h1>
+                <button
+                    onClick={() => setShowCreateModal(true)}
+                    className="px-4 py-2 bg-accent rounded hover:bg-blue-600"
+                >
+                    New Workspace
+                </button>
             </div>
+            <div className="flex-1 p-6 overflow-y-auto">
+                <h2 className="text-xl mb-4">Active Workspaces</h2>
+                {rooms.length === 0 ? (
+                    <p className="text-gray-500">No active workspaces. Create one!</p>
+                ) : (
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                        {rooms.map(room => (
+                            <div key={room.id} className="bg-sidebar p-4 rounded border border-white/10">
+                                <div className="flex justify-between items-start">
+                                    <div>
+                                        <h3 className="font-semibold">{room.name}</h3>
+                                        <p className="text-sm text-gray-400">ID: {room.id.slice(0, 8)}...</p>
+                                    </div>
+                                    <button
+                                        onClick={() => copyRoomLink(room.id)}
+                                        className="p-1 hover:bg-white/10 rounded transition-colors"
+                                        title="Copy invite link"
+                                    >
+                                        {copiedRoomId === room.id ? (
+                                            <Check size={16} className="text-green-500" />
+                                        ) : (
+                                            <Copy size={16} className="text-gray-400" />
+                                        )}
+                                    </button>
+                                </div>
+                                <button
+                                    onClick={() => {
+                                        setSelectedRoom(room);
+                                        setShowJoinModal(true);
+                                    }}
+                                    className="mt-2 px-3 py-1 bg-accent rounded text-sm hover:bg-blue-600 w-full"
+                                >
+                                    Join
+                                </button>
+                            </div>
+                        ))}
+                    </div>
+                )}
+            </div>
+
+            {/* Create Modal (unchanged) */}
+            {showCreateModal && (
+                <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
+                    <div className="bg-sidebar rounded p-6 w-96">
+                        <h2 className="text-xl mb-4">Create Workspace</h2>
+                        <form onSubmit={handleCreateRoom}>
+                            <input
+                                type="text"
+                                placeholder="Room Name"
+                                className="w-full p-2 bg-editor border border-white/10 rounded mb-3"
+                                value={roomName}
+                                onChange={e => setRoomName(e.target.value)}
+                                required
+                            />
+                            <input
+                                type="password"
+                                placeholder="Room Password"
+                                className="w-full p-2 bg-editor border border-white/10 rounded mb-4"
+                                value={roomPassword}
+                                onChange={e => setRoomPassword(e.target.value)}
+                                required
+                            />
+                            <div className="flex justify-end gap-2">
+                                <button type="button" onClick={() => setShowCreateModal(false)} className="px-4 py-2 bg-gray-600 rounded">Cancel</button>
+                                <button type="submit" disabled={isLoading} className="px-4 py-2 bg-accent rounded">Create</button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            )}
+
+            {/* Join Modal (unchanged) */}
+            {showJoinModal && selectedRoom && (
+                <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
+                    <div className="bg-sidebar rounded p-6 w-96">
+                        <h2 className="text-xl mb-4">Join {selectedRoom.name}</h2>
+                        <form onSubmit={(e) => {
+                            e.preventDefault();
+                            const pwd = e.target.password.value;
+                            handleJoinRoom(selectedRoom.id, pwd);
+                        }}>
+                            <input
+                                type="password"
+                                name="password"
+                                placeholder="Room Password"
+                                className="w-full p-2 bg-editor border border-white/10 rounded mb-4"
+                                required
+                            />
+                            <div className="flex justify-end gap-2">
+                                <button type="button" onClick={() => setShowJoinModal(false)} className="px-4 py-2 bg-gray-600 rounded">Cancel</button>
+                                <button type="submit" className="px-4 py-2 bg-accent rounded">Join</button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            )}
         </div>
     );
 };
@@ -3211,7 +3536,7 @@ export default Lobby;
 
 --- File: frontend\src\pages\Login.jsx ---
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import api from '../api';
 
@@ -3220,18 +3545,29 @@ const Login = () => {
     const [password, setPassword] = useState('');
     const navigate = useNavigate();
 
+    // Check if there's a redirect target stored from before login
+    useEffect(() => {
+        const redirect = sessionStorage.getItem('redirectAfterLogin');
+        if (redirect) {
+            // Clear it after reading? We'll clear after login success.
+        }
+    }, []);
+
     const handleLogin = async (e) => {
         e.preventDefault();
         try {
-            // Send login request to your backend API
             const { data } = await api.post('/auth/login', { email, password });
-
-            // Store the JWT and user info for persistence
             localStorage.setItem('token', data.token);
             localStorage.setItem('user', JSON.stringify(data.user));
 
-            // Redirect to the lobby instead of a hardcoded room
-            navigate('/lobby');
+            // Check if we have a saved redirect path
+            const redirectPath = sessionStorage.getItem('redirectAfterLogin');
+            if (redirectPath) {
+                sessionStorage.removeItem('redirectAfterLogin');
+                navigate(redirectPath);
+            } else {
+                navigate('/lobby');
+            }
         } catch (error) {
             alert(error.response?.data?.error || "Login failed. Please check your credentials.");
         }
