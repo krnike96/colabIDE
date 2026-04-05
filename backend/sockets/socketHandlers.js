@@ -32,12 +32,18 @@ export const setupSockets = (io) => {
       socket.to(data.roomId).emit('awareness-update', data);
     });
 
+    // Chat messages
     socket.on('send-message', ({ roomId, message, sender }) => {
       io.to(roomId).emit('receive-message', {
         text: message,
         sender,
         timestamp: new Date()
       });
+    });
+
+    // File operation sync (create, rename, delete)
+    socket.on('file-operation', (data) => {
+      socket.to(data.roomId).emit('file-operation', data);
     });
 
     socket.on('disconnect', () => {
