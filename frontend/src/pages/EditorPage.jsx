@@ -19,8 +19,8 @@ const stringToHexColor = (str) => {
     return '#' + '00000'.substring(0, 6 - c.length) + c;
 };
 
-const MainLayout = ({ children, sidebarPanels = {}, activeUserCount = 0 }) => {
-    const [activeTab, setActiveTab] = useState('files');
+// --- MainLayout now receives activeTab, setActiveTab, and unreadChatCount as props ---
+const MainLayout = ({ children, sidebarPanels = {}, activeUserCount = 0, activeTab, setActiveTab, unreadChatCount = 0 }) => {
     return (
         <div className="flex h-screen w-screen bg-[#1e1e1e] text-gray-300 font-sans">
             <div className="w-12 bg-[#333333] flex flex-col items-center py-4 space-y-6 border-r border-white/10 z-20">
@@ -37,9 +37,16 @@ const MainLayout = ({ children, sidebarPanels = {}, activeUserCount = 0 }) => {
                         </div>
                     )}
                 </div>
-                <button onClick={() => setActiveTab('chat')} title="Chat" className="w-full flex justify-center outline-none">
-                    <MessageSquare className={`cursor-pointer transition-colors ${activeTab === 'chat' ? 'text-white' : 'text-gray-500 hover:text-gray-300'}`} />
-                </button>
+                <div className="relative w-full flex justify-center">
+                    <button onClick={() => setActiveTab('chat')} title="Chat" className="outline-none">
+                        <MessageSquare className={`cursor-pointer transition-colors ${activeTab === 'chat' ? 'text-white' : 'text-gray-500 hover:text-gray-300'}`} />
+                    </button>
+                    {unreadChatCount > 0 && (
+                        <div className="absolute top-0 right-1 bg-red-500 text-white text-[9px] font-bold px-1.5 py-0.5 rounded-full transform translate-x-1/2 -translate-y-1/2 pointer-events-none shadow-md">
+                            {unreadChatCount > 99 ? '99+' : unreadChatCount}
+                        </div>
+                    )}
+                </div>
                 <div className="flex-grow"></div>
                 <button title="Settings" className="w-full flex justify-center outline-none">
                     <Settings className="text-gray-500 cursor-pointer mb-2 hover:text-gray-300 transition-colors" />
@@ -78,6 +85,8 @@ const EditorPage = () => {
     const [selectedFileId, setSelectedFileId] = useState(null);
     const [linkCopied, setLinkCopied] = useState(false);
     const [chatMessages, setChatMessages] = useState([]);
+    const [activeTab, setActiveTab] = useState('files');          // <-- lifted state
+    const [unreadChatCount, setUnreadChatCount] = useState(0);    // <-- unread messages counter
 
     const currentUsername = JSON.parse(localStorage.getItem('user') || '{}').username || 'Anonymous';
     const activeFile = files.find(f => f.id === activeFileId);
@@ -92,7 +101,14 @@ const EditorPage = () => {
 
     useEffect(() => { filesRef.current = files; }, [files]);
 
-    // Chat persistence
+    // Reset unread count when chat tab becomes active
+    useEffect(() => {
+        if (activeTab === 'chat') {
+            setUnreadChatCount(0);
+        }
+    }, [activeTab]);
+
+    // Chat persistence (localStorage)
     useEffect(() => {
         const stored = localStorage.getItem(`chat_${roomId}`);
         if (stored) {
@@ -109,11 +125,13 @@ const EditorPage = () => {
 
     const addChatMessage = useCallback((msg) => {
         setChatMessages(prev => [...prev, { id: Date.now() + Math.random(), ...msg }]);
-    }, []);
+        // Increment unread count only if chat panel is not active
+        if (activeTab !== 'chat') {
+            setUnreadChatCount(prev => prev + 1);
+        }
+    }, [activeTab]);
 
-    // ------------------------------------------------------------------
-    // 1. COLLABORATION (Yjs + Socket) – EXACTLY as in the original working code
-    // ------------------------------------------------------------------
+    // Collaboration: socket + Yjs (exactly as working version)
     useEffect(() => {
         const roomPassword = sessionStorage.getItem(`room_${roomId}_password`);
         if (!roomPassword) {
@@ -127,7 +145,6 @@ const EditorPage = () => {
 
         if (!socket.connected) socket.connect();
 
-        // Join room with password
         const handleJoinError = (err) => {
             alert(err.error);
             navigate('/lobby');
@@ -135,7 +152,6 @@ const EditorPage = () => {
         socket.on('join-error', handleJoinError);
         socket.emit('join-room', { roomId, username, roomPassword });
 
-        // Yjs awareness (cursors)
         if (!awarenessRef.current) {
             awarenessRef.current = new awarenessProtocol.Awareness(yDocRef.current);
         }
@@ -170,7 +186,6 @@ const EditorPage = () => {
             } catch (err) { console.error('Awareness error', err); }
         };
 
-        // Yjs document sync – THE ORIGINAL WORKING LOGIC
         const handleRemoteUpdate = (data) => {
             if (data.roomId !== roomId) return;
             try {
@@ -187,15 +202,11 @@ const EditorPage = () => {
         };
         yDocRef.current.on('update', handleLocalUpdate);
 
-        // Socket event registration
         socket.on('yjs-update', handleRemoteUpdate);
         socket.on('awareness-update', handleRemoteAwareness);
-
-        // Request full state from others
         socket.emit('yjs-update', { roomId, requestSync: true });
         const syncTimeout = setTimeout(() => setIsSynced(true), 2000);
 
-        // Chat listener (does not interfere)
         const handleReceiveMessage = (data) => addChatMessage(data);
         socket.on('receive-message', handleReceiveMessage);
 
@@ -210,9 +221,7 @@ const EditorPage = () => {
         };
     }, [roomId, navigate, addChatMessage]);
 
-    // ------------------------------------------------------------------
-    // 2. MONACO BINDING – RE‑BIND ONLY WHEN NEEDED
-    // ------------------------------------------------------------------
+    // Monaco binding
     const bindEditor = useCallback((editor) => {
         if (!editor || !activeFileId || !isSynced || !awarenessRef.current) return;
         if (bindingRef.current) bindingRef.current.destroy();
@@ -236,16 +245,13 @@ const EditorPage = () => {
         bindEditor(editor);
     };
 
-    // Rebind when file changes or sync completes
     useEffect(() => {
         if (editorRef.current && activeFileId && isSynced && awarenessRef.current) {
             bindEditor(editorRef.current);
         }
     }, [activeFileId, isSynced, bindEditor]);
 
-    // ------------------------------------------------------------------
-    // 3. FILE OPERATIONS (with socket broadcast)
-    // ------------------------------------------------------------------
+    // File operations
     const loadProject = async () => {
         try {
             const { data } = await api.get(`/projects/room/${roomId}`);
@@ -411,7 +417,13 @@ const EditorPage = () => {
     );
 
     return (
-        <MainLayout sidebarPanels={{ files: filesPanel, users: usersPanel, chat: chatPanel }} activeUserCount={activeUsers.length}>
+        <MainLayout
+            sidebarPanels={{ files: filesPanel, users: usersPanel, chat: chatPanel }}
+            activeUserCount={activeUsers.length}
+            activeTab={activeTab}
+            setActiveTab={setActiveTab}
+            unreadChatCount={unreadChatCount}
+        >
             <style>{`
                 .yRemoteSelection { background-color: inherit; opacity: 0.4; }
                 .yRemoteSelectionHead {
