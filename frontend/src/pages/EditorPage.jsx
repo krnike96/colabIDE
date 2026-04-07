@@ -64,6 +64,8 @@ const MainLayout = ({ children, sidebarPanels = {}, activeUserCount = 0 }) => {
 const EditorPage = () => {
     const { roomId } = useParams();
     const navigate = useNavigate();
+
+    // UI state
     const [files, setFiles] = useState([]);
     const [activeFileId, setActiveFileId] = useState(null);
     const [srcDoc, setSrcDoc] = useState('');
@@ -77,65 +79,45 @@ const EditorPage = () => {
     const [linkCopied, setLinkCopied] = useState(false);
     const [chatMessages, setChatMessages] = useState([]);
 
-    const userStr = localStorage.getItem('user');
-    const currentUsername = userStr ? JSON.parse(userStr).username : 'Anonymous';
+    const currentUsername = JSON.parse(localStorage.getItem('user') || '{}').username || 'Anonymous';
+    const activeFile = files.find(f => f.id === activeFileId);
 
+    // Refs
     const yDocRef = useRef(new Y.Doc());
-    const awarenessRef = useRef(new awarenessProtocol.Awareness(yDocRef.current));
+    const awarenessRef = useRef(null);
     const bindingRef = useRef(null);
     const seededFiles = useRef(new Set());
     const filesRef = useRef(files);
+    const editorRef = useRef(null);
 
-    const activeFile = files.find(f => f.id === activeFileId);
+    useEffect(() => { filesRef.current = files; }, [files]);
 
-    useEffect(() => {
-        filesRef.current = files;
-    }, [files]);
-
-    // --- Load chat messages from localStorage on mount ---
+    // Chat persistence
     useEffect(() => {
         const stored = localStorage.getItem(`chat_${roomId}`);
         if (stored) {
-            try {
-                const parsed = JSON.parse(stored);
-                if (Array.isArray(parsed)) {
-                    setChatMessages(parsed);
-                }
-            } catch (e) { console.error("Failed to load chat history"); }
+            try { setChatMessages(JSON.parse(stored)); } catch (e) { }
         }
     }, [roomId]);
-
-    // --- Save chat messages to localStorage whenever they change ---
     useEffect(() => {
         if (chatMessages.length > 0) {
-            // Optional: limit to last 200 messages to avoid huge storage
-            const toStore = chatMessages.slice(-200);
-            localStorage.setItem(`chat_${roomId}`, JSON.stringify(toStore));
+            localStorage.setItem(`chat_${roomId}`, JSON.stringify(chatMessages.slice(-200)));
         } else {
-            // If empty, you might want to remove the key, but we'll keep as is
             localStorage.removeItem(`chat_${roomId}`);
         }
     }, [chatMessages, roomId]);
 
-    const addChatMessage = useCallback((message) => {
-        setChatMessages(prev => [...prev, {
-            id: Date.now() + Math.random(),
-            sender: message.sender,
-            text: message.text,
-            timestamp: message.timestamp
-        }]);
+    const addChatMessage = useCallback((msg) => {
+        setChatMessages(prev => [...prev, { id: Date.now() + Math.random(), ...msg }]);
     }, []);
 
-    // --- Helper to update files state (used by socket listener) ---
-    const updateFiles = useCallback((newFiles) => {
-        setFiles(newFiles);
-    }, []);
-
-    // --- Socket & Yjs sync (unchanged) ---
+    // ------------------------------------------------------------------
+    // 1. COLLABORATION (Yjs + Socket) – EXACTLY as in the original working code
+    // ------------------------------------------------------------------
     useEffect(() => {
         const roomPassword = sessionStorage.getItem(`room_${roomId}_password`);
         if (!roomPassword) {
-            alert('No password found for this room. Redirecting to lobby...');
+            alert('No password found. Redirecting...');
             navigate('/lobby');
             return;
         }
@@ -145,48 +127,57 @@ const EditorPage = () => {
 
         if (!socket.connected) socket.connect();
 
-        const handleJoinError = (error) => {
-            alert(error.error);
+        // Join room with password
+        const handleJoinError = (err) => {
+            alert(err.error);
             navigate('/lobby');
         };
         socket.on('join-error', handleJoinError);
-
         socket.emit('join-room', { roomId, username, roomPassword });
 
+        // Yjs awareness (cursors)
+        if (!awarenessRef.current) {
+            awarenessRef.current = new awarenessProtocol.Awareness(yDocRef.current);
+        }
         const userColor = stringToHexColor(username);
         awarenessRef.current.setLocalStateField('user', { name: username, color: userColor });
 
         const handleAwarenessChange = ({ added, updated, removed }) => {
             const states = Array.from(awarenessRef.current.getStates().values());
-            const users = states.map(state => state.user).filter(Boolean);
-            const uniqueUsers = Array.from(new Map(users.map(u => [u.name, u])).values());
-            setActiveUsers(uniqueUsers);
-            const changedClients = added.concat(updated, removed);
-            const update = awarenessProtocol.encodeAwarenessUpdate(awarenessRef.current, changedClients);
-            socket.emit('awareness-update', { roomId, update: Array.from(update) });
+            const users = states.map(s => s.user).filter(Boolean);
+            const unique = [];
+            const seen = new Set();
+            for (const u of users) {
+                if (!seen.has(u.name)) {
+                    seen.add(u.name);
+                    unique.push(u);
+                }
+            }
+            setActiveUsers(unique);
+            const changed = [...added, ...updated, ...removed];
+            if (changed.length) {
+                const update = awarenessProtocol.encodeAwarenessUpdate(awarenessRef.current, changed);
+                socket.emit('awareness-update', { roomId, update: Array.from(update) });
+            }
         };
         awarenessRef.current.on('change', handleAwarenessChange);
 
         const handleRemoteAwareness = (data) => {
+            if (data.roomId !== roomId) return;
             try {
-                const uint8Update = new Uint8Array(data.update || data);
-                awarenessProtocol.applyAwarenessUpdate(awarenessRef.current, uint8Update, 'remote');
-            } catch (err) { console.error("Awareness Sync Error:", err); }
+                const uint8 = new Uint8Array(data.update);
+                awarenessProtocol.applyAwarenessUpdate(awarenessRef.current, uint8, 'remote');
+            } catch (err) { console.error('Awareness error', err); }
         };
 
+        // Yjs document sync – THE ORIGINAL WORKING LOGIC
         const handleRemoteUpdate = (data) => {
+            if (data.roomId !== roomId) return;
             try {
-                if (data.requestSync) {
-                    const fullState = Y.encodeStateAsUpdate(yDocRef.current);
-                    socket.emit('yjs-update', { roomId, update: Array.from(fullState), isFullState: true });
-                    return;
-                }
-                if (data.roomId === roomId && data.update) {
-                    const uint8Update = new Uint8Array(data.update);
-                    Y.applyUpdate(yDocRef.current, uint8Update, 'remote');
-                    if (data.isFullState) setIsSynced(true);
-                }
-            } catch (err) { console.error("Yjs Sync Error:", err); }
+                const uint8Update = new Uint8Array(data.update);
+                Y.applyUpdate(yDocRef.current, uint8Update, 'remote');
+                if (data.isFullState) setIsSynced(true);
+            } catch (err) { console.error('Yjs apply error', err); }
         };
 
         const handleLocalUpdate = (update, origin) => {
@@ -194,19 +185,19 @@ const EditorPage = () => {
                 socket.emit('yjs-update', { roomId, update: Array.from(update) });
             }
         };
-
-        const handleReceiveMessage = (data) => {
-            addChatMessage(data);
-        };
-        socket.on('receive-message', handleReceiveMessage);
-
-        socket.on('yjs-update', handleRemoteUpdate);
-        socket.on('awareness-update', handleRemoteAwareness);
         yDocRef.current.on('update', handleLocalUpdate);
 
-        socket.emit('yjs-update', { roomId, requestSync: true });
+        // Socket event registration
+        socket.on('yjs-update', handleRemoteUpdate);
+        socket.on('awareness-update', handleRemoteAwareness);
 
-        const syncTimeout = setTimeout(() => setIsSynced(true), 1500);
+        // Request full state from others
+        socket.emit('yjs-update', { roomId, requestSync: true });
+        const syncTimeout = setTimeout(() => setIsSynced(true), 2000);
+
+        // Chat listener (does not interfere)
+        const handleReceiveMessage = (data) => addChatMessage(data);
+        socket.on('receive-message', handleReceiveMessage);
 
         return () => {
             socket.off('join-error', handleJoinError);
@@ -214,122 +205,65 @@ const EditorPage = () => {
             socket.off('yjs-update', handleRemoteUpdate);
             socket.off('awareness-update', handleRemoteAwareness);
             yDocRef.current.off('update', handleLocalUpdate);
-            awarenessRef.current.off('change', handleAwarenessChange);
+            if (awarenessRef.current) awarenessRef.current.off('change', handleAwarenessChange);
             clearTimeout(syncTimeout);
         };
     }, [roomId, navigate, addChatMessage]);
 
-    // --- File operation sync listener ---
-    useEffect(() => {
-        const handleFileOperation = (data) => {
-            if (data.roomId !== roomId) return;
-
-            switch (data.type) {
-                case 'create':
-                    setFiles(prev => [...prev, data.file]);
-                    break;
-                case 'rename':
-                    setFiles(prev => prev.map(f =>
-                        f.id === data.fileId ? { ...f, name: data.newName } : f
-                    ));
-                    break;
-                case 'delete':
-                    setFiles(prev => {
-                        const newFiles = prev.filter(f => f.id !== data.fileId);
-                        if (activeFileId === data.fileId) {
-                            setActiveFileId(newFiles[0]?.id || null);
-                        }
-                        return newFiles;
-                    });
-                    break;
-                default:
-                    break;
-            }
-        };
-
-        socket.on('file-operation', handleFileOperation);
-        return () => socket.off('file-operation', handleFileOperation);
-    }, [roomId, activeFileId]);
-
-    // --- Monaco binding (unchanged) ---
-    const handleEditorDidMount = (editor) => {
-        if (!activeFileId || !isSynced) return;
+    // ------------------------------------------------------------------
+    // 2. MONACO BINDING – RE‑BIND ONLY WHEN NEEDED
+    // ------------------------------------------------------------------
+    const bindEditor = useCallback((editor) => {
+        if (!editor || !activeFileId || !isSynced || !awarenessRef.current) return;
         if (bindingRef.current) bindingRef.current.destroy();
+
         const fileIdStr = activeFileId.toString();
         const yText = yDocRef.current.getText(fileIdStr);
         if (!seededFiles.current.has(fileIdStr)) {
             const currentFile = filesRef.current.find(f => f.id === activeFileId);
-            if (yText.toString() === '' && currentFile?.content) yText.insert(0, currentFile.content);
+            if (yText.toString() === '' && currentFile?.content) {
+                yText.insert(0, currentFile.content);
+            }
             seededFiles.current.add(fileIdStr);
         }
-        bindingRef.current = new MonacoBinding(yText, editor.getModel(), new Set([editor]), awarenessRef.current);
+        const model = editor.getModel();
+        if (!model) return;
+        bindingRef.current = new MonacoBinding(yText, model, new Set([editor]), awarenessRef.current);
+    }, [activeFileId, isSynced]);
+
+    const handleEditorDidMount = (editor) => {
+        editorRef.current = editor;
+        bindEditor(editor);
     };
 
+    // Rebind when file changes or sync completes
     useEffect(() => {
-        return () => { if (bindingRef.current) bindingRef.current.destroy(); };
-    }, [activeFileId]);
+        if (editorRef.current && activeFileId && isSynced && awarenessRef.current) {
+            bindEditor(editorRef.current);
+        }
+    }, [activeFileId, isSynced, bindEditor]);
 
-    // --- Data fetching ---
+    // ------------------------------------------------------------------
+    // 3. FILE OPERATIONS (with socket broadcast)
+    // ------------------------------------------------------------------
     const loadProject = async () => {
         try {
             const { data } = await api.get(`/projects/room/${roomId}`);
             setFiles(data);
-            if (data.length > 0 && !activeFileId) setActiveFileId(data[0].id);
-        } catch (err) { console.error("Load error:", err); }
+            if (data.length && !activeFileId) setActiveFileId(data[0].id);
+        } catch (err) { console.error('Load error', err); }
     };
-
     useEffect(() => { loadProject(); }, [roomId]);
 
-    // --- File operations with socket broadcast ---
     const saveProject = async () => {
         if (!activeFileId) return;
         try {
             const content = yDocRef.current.getText(activeFileId.toString()).toString();
             await api.put(`/projects/file/${activeFileId}`, { content });
             setFiles(prev => prev.map(f => f.id === activeFileId ? { ...f, content } : f));
-        } catch (err) { console.error("Save error"); }
+        } catch (err) { console.error('Save error'); }
     };
 
-    const createFile = async () => {
-        const name = prompt("Filename:");
-        if (!name) return;
-        const ext = name.split('.').pop();
-        const langMap = { js: 'javascript', html: 'html', css: 'css' };
-        try {
-            const { data } = await api.post('/files', {
-                name,
-                content: '',
-                language: langMap[ext] || 'javascript',
-                roomId
-            });
-            setFiles(prev => [...prev, data]);
-            setActiveFileId(data.id);
-            socket.emit('file-operation', { roomId, type: 'create', file: data });
-        } catch (err) { console.error("Create error"); alert(err.response?.data?.error || "Create failed"); }
-    };
-
-    const renameFile = async (id, oldName) => {
-        const newName = prompt("Rename to:", oldName);
-        if (!newName || newName === oldName) return;
-        try {
-            await api.patch(`/projects/file/${id}/rename`, { name: newName });
-            setFiles(prev => prev.map(f => f.id === id ? { ...f, name: newName } : f));
-            socket.emit('file-operation', { roomId, type: 'rename', fileId: id, newName });
-        } catch (err) { console.error("Rename failed"); alert(err.response?.data?.error || "Rename failed"); }
-    };
-
-    const deleteFile = async (id) => {
-        if (!window.confirm("Delete file?")) return;
-        try {
-            await api.delete(`/files/${id}`);
-            const remaining = files.filter(f => f.id !== id);
-            setFiles(remaining);
-            if (activeFileId === id) setActiveFileId(remaining[0]?.id || null);
-            socket.emit('file-operation', { roomId, type: 'delete', fileId: id });
-        } catch (err) { console.error("Delete error"); alert("Delete failed"); }
-    };
-
-    // --- Preview and code execution ---
     const runCode = () => {
         setLogs([]);
         const getC = (ext) => {
@@ -341,10 +275,67 @@ const EditorPage = () => {
     };
 
     useEffect(() => {
-        const onMsg = (e) => { if (e.data.type === 'CONSOLE_LOG') setLogs(prev => [...prev, e.data.payload.join(' ')]); };
+        const onMsg = (e) => {
+            if (e.data.type === 'CONSOLE_LOG') setLogs(prev => [...prev, e.data.payload.join(' ')]);
+        };
         window.addEventListener('message', onMsg);
         return () => window.removeEventListener('message', onMsg);
     }, []);
+
+    const createFile = async () => {
+        const name = prompt('Filename:');
+        if (!name) return;
+        const ext = name.split('.').pop();
+        const langMap = { js: 'javascript', html: 'html', css: 'css' };
+        try {
+            const { data } = await api.post('/files', { name, content: '', language: langMap[ext] || 'javascript', roomId });
+            setFiles(prev => [...prev, data]);
+            setActiveFileId(data.id);
+            socket.emit('file-operation', { roomId, type: 'create', file: data });
+        } catch (err) { alert(err.response?.data?.error || 'Create failed'); }
+    };
+
+    const renameFile = async (id, oldName) => {
+        const newName = prompt('Rename to:', oldName);
+        if (!newName || newName === oldName) return;
+        try {
+            await api.patch(`/projects/file/${id}/rename`, { name: newName });
+            setFiles(prev => prev.map(f => f.id === id ? { ...f, name: newName } : f));
+            socket.emit('file-operation', { roomId, type: 'rename', fileId: id, newName });
+        } catch (err) { alert(err.response?.data?.error || 'Rename failed'); }
+    };
+
+    const deleteFile = async (id) => {
+        if (!window.confirm('Delete file?')) return;
+        try {
+            await api.delete(`/files/${id}`);
+            const remaining = files.filter(f => f.id !== id);
+            setFiles(remaining);
+            if (activeFileId === id) setActiveFileId(remaining[0]?.id || null);
+            socket.emit('file-operation', { roomId, type: 'delete', fileId: id });
+        } catch (err) { alert('Delete failed'); }
+    };
+
+    // Listen for remote file operations
+    useEffect(() => {
+        const handleFileOp = (data) => {
+            if (data.roomId !== roomId) return;
+            switch (data.type) {
+                case 'create': setFiles(prev => [...prev, data.file]); break;
+                case 'rename': setFiles(prev => prev.map(f => f.id === data.fileId ? { ...f, name: data.newName } : f)); break;
+                case 'delete':
+                    setFiles(prev => {
+                        const newFiles = prev.filter(f => f.id !== data.fileId);
+                        if (activeFileId === data.fileId) setActiveFileId(newFiles[0]?.id || null);
+                        return newFiles;
+                    });
+                    break;
+                default: break;
+            }
+        };
+        socket.on('file-operation', handleFileOp);
+        return () => socket.off('file-operation', handleFileOp);
+    }, [roomId, activeFileId]);
 
     const getFileIcon = (name) => {
         if (name.endsWith('.html')) return <Code2 size={14} className="text-orange-500" />;
@@ -353,21 +344,26 @@ const EditorPage = () => {
         return <Plus size={14} className="text-gray-400" />;
     };
 
-    // --- Sidebar panels (unchanged) ---
+    const copyRoomLink = () => {
+        const link = `${window.location.origin}/join/${roomId}`;
+        navigator.clipboard.writeText(link);
+        setLinkCopied(true);
+        setTimeout(() => setLinkCopied(false), 2000);
+    };
+
+    // Sidebar panels
     const filesPanel = (
         <div className="flex flex-col h-full bg-[#252526]" onClick={() => setMenuPos(null)}>
-            <div className="p-4 border-b border-white/5 flex justify-between items-center">
-                <span className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Explorer</span>
+            <div className="p-4 border-b border-white/5 flex justify-between">
+                <span className="text-[10px] font-bold text-gray-400">Explorer</span>
                 <button onClick={createFile} className="p-1 hover:bg-white/10 rounded"><Plus size={14} /></button>
             </div>
-            <div className="flex-grow overflow-y-auto">
+            <div className="flex-1 overflow-y-auto">
                 {files.map(file => (
-                    <div
-                        key={file.id}
+                    <div key={file.id}
                         onContextMenu={(e) => { e.preventDefault(); setMenuPos({ x: e.pageX, y: e.pageY }); setSelectedFileId(file.id); }}
                         onClick={() => setActiveFileId(file.id)}
-                        className={`px-4 py-2 text-sm flex items-center gap-2 cursor-pointer transition-colors ${activeFileId === file.id ? 'bg-accent/20 text-white border-l-2 border-accent' : 'text-gray-400 hover:bg-white/5'}`}
-                    >
+                        className={`px-4 py-2 text-sm flex items-center gap-2 cursor-pointer ${activeFileId === file.id ? 'bg-accent/20 text-white border-l-2 border-accent' : 'text-gray-400 hover:bg-white/5'}`}>
                         {getFileIcon(file.name)}
                         <span className="truncate">{file.name}</span>
                     </div>
@@ -389,15 +385,15 @@ const EditorPage = () => {
     const usersPanel = (
         <div className="flex flex-col h-full bg-[#252526]">
             <div className="p-4 border-b border-white/5">
-                <span className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Active Users ({activeUsers.length})</span>
+                <span className="text-[10px] font-bold text-gray-400">Active Users ({activeUsers.length})</span>
             </div>
-            <div className="flex-grow overflow-y-auto p-2 space-y-1">
+            <div className="flex-1 overflow-y-auto p-2 space-y-1">
                 {activeUsers.map((u, i) => (
                     <div key={i} className="flex items-center gap-3 p-2 rounded hover:bg-white/5">
                         <div className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold text-white shadow-sm" style={{ backgroundColor: u.color }}>
                             {u.name.charAt(0).toUpperCase()}
                         </div>
-                        <span className="text-sm font-medium text-gray-300 truncate">{u.name}</span>
+                        <span className="text-sm font-medium text-gray-300">{u.name}</span>
                         <div className="w-2 h-2 rounded-full bg-green-500 ml-auto"></div>
                     </div>
                 ))}
@@ -410,18 +406,9 @@ const EditorPage = () => {
             roomId={roomId}
             currentUser={currentUsername}
             messages={chatMessages}
-            onSendMessage={(messageData) => {
-                socket.emit('send-message', messageData);
-            }}
+            onSendMessage={(msg) => socket.emit('send-message', msg)}
         />
     );
-
-    const copyRoomLink = () => {
-        const link = `${window.location.origin}/join/${roomId}`;
-        navigator.clipboard.writeText(link);
-        setLinkCopied(true);
-        setTimeout(() => setLinkCopied(false), 2000);
-    };
 
     return (
         <MainLayout sidebarPanels={{ files: filesPanel, users: usersPanel, chat: chatPanel }} activeUserCount={activeUsers.length}>
@@ -455,7 +442,7 @@ const EditorPage = () => {
             `}</style>
             <div className="flex flex-col h-full bg-[#1e1e1e]" onClick={() => setMenuPos(null)}>
                 <div className="flex bg-[#1e1e1e] border-b border-white/10 items-center px-2 z-10">
-                    <div className="flex flex-grow overflow-x-auto no-scrollbar">
+                    <div className="flex flex-1 overflow-x-auto no-scrollbar">
                         {files.map(file => (
                             <button key={file.id} onClick={() => setActiveFileId(file.id)} className={`px-4 py-2.5 text-xs border-r border-white/5 whitespace-nowrap transition-colors ${activeFileId === file.id ? 'bg-[#1e1e1e] text-white border-t-2 border-accent' : 'text-gray-500 hover:bg-white/5'}`}>
                                 {file.name}
@@ -463,18 +450,18 @@ const EditorPage = () => {
                         ))}
                     </div>
                     <div className="flex gap-1 ml-auto px-2">
-                        <button onClick={saveProject} className="p-2 text-accent hover:text-white" title="Save All"><Save size={16} /></button>
-                        <button onClick={runCode} className="p-2 text-green-500 hover:text-white" title="Run Code"><Play size={16} /></button>
+                        <button onClick={saveProject} className="p-2 text-accent hover:text-white"><Save size={16} /></button>
+                        <button onClick={runCode} className="p-2 text-green-500 hover:text-white"><Play size={16} /></button>
                         <button onClick={() => setShowPreview(!showPreview)} className="p-2 text-gray-400 hover:text-white"><Layout size={16} /></button>
-                        <button onClick={copyRoomLink} className="p-2 text-gray-400 hover:text-white" title="Copy invite link">
+                        <button onClick={copyRoomLink} className="p-2 text-gray-400 hover:text-white">
                             {linkCopied ? <Check size={16} className="text-green-500" /> : <Copy size={16} />}
                         </button>
                     </div>
                 </div>
-                <div className="flex flex-grow overflow-hidden">
+                <div className="flex flex-1 overflow-hidden">
                     <div className={`${showPreview ? 'w-1/2' : 'w-full'} h-full border-r border-white/10 relative`}>
                         {!isSynced ? (
-                            <div className="flex flex-col items-center justify-center h-full text-gray-400 gap-3 font-mono text-sm">
+                            <div className="flex flex-col items-center justify-center h-full text-gray-400 gap-3">
                                 <Loader2 size={32} className="animate-spin text-accent" />
                                 <p>Synchronizing workspace...</p>
                             </div>
@@ -494,11 +481,15 @@ const EditorPage = () => {
                                     padding: { top: 24 }
                                 }}
                             />
-                        ) : <div className="flex items-center justify-center h-full text-gray-700 italic">Select a file...</div>}
+                        ) : (
+                            <div className="flex items-center justify-center h-full text-gray-700 italic">
+                                No files in this room. Create one using the + button.
+                            </div>
+                        )}
                     </div>
                     {showPreview && (
                         <div className="w-1/2 h-full flex flex-col bg-white">
-                            <iframe key={executionKey} srcDoc={srcDoc} className="flex-grow w-full border-none" sandbox="allow-scripts" title="Preview" />
+                            <iframe key={executionKey} srcDoc={srcDoc} className="flex-1 w-full border-none" sandbox="allow-scripts" title="Preview" />
                             <div className="h-40 bg-[#1e1e1e] border-t border-white/10 overflow-y-auto p-2 font-mono text-[10px]">
                                 <div className="text-gray-500 mb-1 flex justify-between border-b border-white/5 uppercase pb-1">
                                     <span>Console</span>
